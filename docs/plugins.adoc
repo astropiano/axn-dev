@@ -1,0 +1,376 @@
+== Writing an axn-dev Plugin
+
+An axn-dev plugin is a plain npm package that contributes one or more
+commands (and optionally agent skills). You can develop one inside this
+workspace (`packages/cmd-*`) or entirely in a separate repository — the
+contract is identical.
+
+== Minimal plugin
+
+A plugin needs two things: an `axn-dev` manifest in `package.json`, and an
+entry module that exports its commands.
+
+.my-plugin/package.json
+[source,json]
+----
+{
+  "name": "@acme/axn-dev-hello",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "files": ["dist", "skills"],
+  "axn-dev": {
+    "commands": [
+      {
+        "name": "hello",
+        "description": "Say hello",
+        "flags": ["--name", "--help", "-h"]
+      }
+    ]
+  },
+  "peerDependencies": {
+    "@axn-dev/core": "^0.1.0"
+  }
+}
+----
+
+.src/index.ts
+[source,ts]
+----
+import type { Command } from "@axn-dev/core";
+
+export class HelloCommand implements Command {
+  readonly name = "hello";
+  readonly description = "Say hello";
+
+  help(): string {
+    return "axn-dev hello [--name <name>]";
+  }
+
+  async execute(args: string[]): Promise<void> {
+    const idx = args.indexOf("--name");
+    const name = idx >= 0 ? args[idx + 1] : "world";
+    console.log(`Hello, ${name}!`);
+  }
+
+  // Optional: tab-completion contribution (words[0] = "axn-dev",
+  // words[1] = this command's name). Return candidates for the last word.
+  complete(words: string[]): string[] {
+    const cur = words[words.length - 1] ?? "";
+    return ["--name", "--help", "-h"].filter((f) => f.startsWith(cur) && f !== cur);
+  }
+}
+
+export const commands: Command[] = [new HelloCommand()];
+----
+
+Notes:
+
+- Use `type: "module"` and write imports with explicit `.js` extensions
+  (Node16 resolution), matching the rest of the codebase.
+- `commands` must be a named export; a default export of `Command` or
+  `Command[]` also works.
+- Declare `@axn-dev/core` as a `peerDependency` (or regular dependency) so
+  the plugin shares the CLI's core instance rather than bundling a copy.
+- `@axn-dev/core` is optional: `Command` is structural, so a zero-dependency
+  plugin works too — you only need core when you want its utilities
+  (config, repo detection, compose, scenario lifecycle).
+
+== The manifest
+
+`axn-dev` field in `package.json`:
+
+[cols="1,3"]
+|===
+| Field | Meaning
+
+| `commands[].name`        | Command name as invoked (`axn-dev <name>`)
+| `commands[].description` | Shown in `axn-dev --help` — loaded without importing your module
+| `commands[].flags`       | Optional static flag list. Used for flag completion _without_ loading your module (keeps completion fast for plugins with heavy deps)
+| `main`                   | Optional entry point override, relative to package root. Default resolution: `exports["."]` → `main` → `dist/index.js` → `src/index.ts` (dev fallback)
+| `skills`                 | Optional skills directory, relative to package root. Default: `skills`
+| `scenarioTypes[].type`   | Scenario type name contributed by this package (e.g. `qemu`)
+| `scenarioTypes[].markers`| Filenames probed in a scenario dir that imply this type — enable detection without loading your module
+| `scenarioTypes[].entry`  | Optional driver module path, relative to package root (defaults to the package entry)
+| `flowAdapters[].name`    | Flow adapter name — used by `adapter="<name>"` and `<scenario adapter="...">`
+| `flowAdapters[].tags`    | Step tags this adapter serves (e.g. `usermessage`, or a custom tag the adapter owns). Adapters without tags only run via explicit `adapter="<name>"` on `<step>`
+| `flowAdapters[].extends` | Optional base adapter name — its resolved instance is passed to your module's factory
+| `flowAdapters[].wantsScenario` | `true` → the flow engine starts the scenario, probes readiness, and passes `ctx.baseUrl` before `run()`
+| `flowAdapters[].entry`   | Optional adapter module path, relative to package root (defaults to the package entry)
+| `deviceEnvResolvers[].name` | Device-env resolver name (diagnostics only)
+| `deviceEnvResolvers[].entry` | Optional resolver module path, relative to package root (defaults to the package entry)
+|===
+
+Command names that collide with a built-in command are skipped with a
+warning.
+
+== What `@axn-dev/core` gives you
+
+Import the same building blocks the built-in commands use — no vendoring:
+
+[source,ts]
+----
+import {
+  Command, CommandRegistry, LazyCommand,
+  flagCompleter, scenarioCompleter, listScenarios, listTags, listJsonFiles,
+  loadAxnDevConfig, loadWorkspaceConfig, parseYaml, configSection,
+  detectRepo, discoverScenarios, discoverGlobalScenarios,
+  ScenarioDiscoveryService,
+  runCompose, getComposeProjectName, gitAsync,
+  getWorktreeInfo, resolveWorkbaseRoots,
+  // ... plus the scenario lifecycle commands themselves:
+  StartCommand, StopCommand, CleanCommand,
+} from "@axn-dev/core";
+----
+
+`StartCommand`/`StopCommand`/`CleanCommand` are exported so a plugin can
+orchestrate scenarios programmatically (this is how `cmd-flow` works):
+
+[source,ts]
+----
+await new StartCommand().execute(["-s", "mock"], { env: { SCENARIO_PORT: "8091" } });
+----
+
+== Contributing a scenario type
+
+A plugin can also contribute a *scenario type* — the second extension axis.
+A scenario's `type` (explicit `type:` in `axn-dev.yaml`, else probed via
+markers) selects the `ScenarioDriver` that owns its lifecycle:
+
+[source,json]
+----
+{
+  "axn-dev": {
+    "scenarioTypes": [
+      { "type": "my-runtime", "markers": ["my-runtime.yaml"] }
+    ]
+  }
+}
+----
+
+[source,ts]
+----
+import type { ScenarioDriver, ScenarioInfo } from "@axn-dev/core";
+
+export const driver: ScenarioDriver = {
+  type: "my-runtime",
+  async isRunning(s: ScenarioInfo) { /* ... */ },
+  async start(s: ScenarioInfo, opts) { /* ... */ },
+  async stop(s: ScenarioInfo) { /* ... */ },
+};
+----
+
+Notes:
+
+- `markers` matter: they let `axn-dev list` and discovery resolve the type
+  *without* importing your module — it is loaded lazily on first use.
+- The driver module must export `driver` (or a default export).
+- A package may contribute only scenario types (no `commands`) — discovery
+  treats it as a plugin either way.
+- Optional driver capabilities: `resolvePortEnv` (opts into `--port`/
+  `--auto-port`), `urlEnv`/`endpoints` (feeds `axn-dev list` and the serve
+  dashboard), `fileEnv`/`runningEnv` (env layering and sticky ports).
+- Built-in types `compose` and `shell` are always registered; the `shell`
+  driver gives any `scenario.sh`-based scenario a zero-code lifecycle
+  (`scenario.sh start|stop|status <dir>`).
+
+== Contributing a flow adapter
+
+Flow adapters are the third extension axis — they decide how a step in an
+XML flow is executed. The manifest registers the adapter statically; the
+module loads only when a step actually dispatches to it.
+
+[source,json]
+----
+{
+  "axn-dev": {
+    "flowAdapters": [
+      {
+        "name": "my-adapter",
+        "entry": "dist/adapter.js",
+        "tags": ["usermessage"],
+        "wantsScenario": true
+      }
+    ]
+  }
+}
+----
+
+[source,ts]
+----
+import type { FlowAdapter, FlowAdapterContext, FlowAdapterStep } from "@axn-dev/core";
+
+export const adapter: FlowAdapter = {
+  async run(step: FlowAdapterStep, ctx: FlowAdapterContext): Promise<string> {
+    // ctx.env — merged environment (process + repo + scenario + flow vars)
+    // ctx.baseUrl — scenario's service URL (spec had wantsScenario: true)
+    // ctx.scenario, ctx.model, ctx.flowDir, ctx.runScript(), ctx.log()
+    const r = await fetch(`${ctx.baseUrl}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: step.value }),
+    });
+    return (await r.json()).response;
+  },
+};
+----
+
+The module may also export `adapters` (a name → adapter map, useful when one
+package ships several adapters) or a factory `(base?: FlowAdapter) =>
+FlowAdapter` — the factory receives the resolved base instance when the spec
+declares `extends: "<base-adapter>"`.
+
+Dispatch rules in a flow file:
+
+* `<step>`/`<script>` without `adapter=` — built-in script engine (tsx subprocess, batched through the orchestrator if configured)
+* `<step adapter="x">` — plugin adapter `x` runs in-process; if `x` isn't registered, the name falls back to a script *file* (`adapters:` config, `src` attr, `adapters/x.ts|js` next to the flow — runs via tsx with the step as `AXN_STEP` env JSON)
+* `<usermessage adapter="x">` or the scenario's `adapter="x"` — plugin adapter `x` serving the `usermessage` tag; `wantsScenario` in the manifest decides whether the engine starts the scenario first
+* `<my-tag .../>` — custom tags dispatch to the adapter declaring the tag in `flowAdapters[].tags`; attributes pass through as `step.args`
+
+`axn-dev flow list-adapters` shows the registered adapters and their tags.
+
+== Contributing a device-env resolver
+
+The fourth extension axis resolves a *device name* into environment
+variables — used by `axn-dev flow -i <device>` (tsAdapter flows). The device
+layout is plugin-owned: core only defines the contract.
+
+[source,json]
+----
+{
+  "axn-dev": {
+    "deviceEnvResolvers": [
+      { "name": "infra", "entry": "dist/device-env.js" }
+    ]
+  }
+}
+----
+
+The module must export `resolver` (or a default export) — a function that
+returns additional env vars for the device, or `null` when it can't resolve
+the name so other registered resolvers can try:
+
+[source,ts]
+----
+import type { DeviceEnvResolverFn } from "@axn-dev/core";
+
+export const resolver: DeviceEnvResolverFn = (device) => {
+  const dir = resolveDeviceDir(device);       // plugin-owned layout
+  if (!dir) return null;
+  return { ...readDotenv(dir), BASE_URL: `http://${readHost(dir)}` };
+};
+----
+
+When no registered resolver handles the name, the caller reports
+"no device-env resolver could handle '<device>'". Resolvers are tried in
+registration order.
+
+== Plugin config sections
+
+A plugin can own a top-level section in `~/.axn-dev/config.yaml` /
+`<repo>/.axn-dev/config.yaml` — core passes all unowned keys through
+verbatim in `config.sections`:
+
+[source,yaml]
+----
+my-plugin:                  # your plugin's section
+  endpoint: https://...
+  retries: 3
+----
+
+[source,ts]
+----
+import { loadAxnDevConfig, configSection } from "@axn-dev/core";
+
+interface MySection { endpoint?: string; retries?: number }
+
+const cfg = configSection<MySection>(loadAxnDevConfig(), "my-plugin");
+----
+
+Local (repo-level) config merges over global: map sections merge per key,
+scalars and lists are replaced. Convention: a scalar section whose value
+resolves to an existing directory is treated as a repo declaration — it
+joins the workspace repo set (env var `<BASENAME>_ROOT`) and worktree
+scanning. An infra plugin's `infra:` section works this way.
+
+== Installing your plugin
+
+[source,bash]
+----
+axn-dev install --plugin @acme/axn-dev-hello          # from a registry
+axn-dev install --plugin @acme/axn-dev-hello@1.2.0    # pinned version
+axn-dev install --plugin ../my-plugin                 # local dir (file: link)
+axn-dev uninstall --plugin @acme/axn-dev-hello        # remove
+----
+
+`install --plugin` runs `npm install` into `~/.axn-dev/plugins` (the
+dedicated plugin prefix — installing into the CLI's own `node_modules`
+would lose plugins on every CLI upgrade). It validates that the package
+carries an `axn-dev` manifest, rolls back if not, and prints what the
+plugin contributed (commands, scenario types, skills).
+
+NOTE: plugins must resolve `@axn-dev/core` to the CLI's own copy — a
+second copy means a second driver registry and silently broken scenario
+types. `install --plugin` therefore installs with `--legacy-peer-deps`
+and symlinks the CLI's resolved `@axn-dev/core` into the plugin prefix.
+Declare it as a peer dependency (`"@axn-dev/core": "*"`) in your plugin's
+package.json.
+
+The CLI scans these roots for packages carrying the `axn-dev` manifest:
+
+1. `$AXN_DEV_PLUGIN_DIRS` — a path-delimited list of directories to scan
+   (each may be a plugin dir itself, a parent dir of plugins, or a
+   `node_modules` dir; `@scope/` dirs are expanded)
+2. `~/.axn-dev/plugins/node_modules` — the persistent install location
+   (where `install --plugin` puts packages)
+3. The directory containing the `axn-dev-cli` package — sibling packages are
+   picked up automatically
+
+For local development without installing:
+
+[source,bash]
+----
+# Point the CLI at your plugin's parent directory
+export AXN_DEV_PLUGIN_DIRS=~/work/my-plugins
+----
+
+Verify discovery (no build of the CLI needed):
+
+[source,bash]
+----
+axn-dev --help                      # 'hello' appears in the command list
+axn-dev --complete axn-dev hello --  # manifest flags, module not loaded
+axn-dev hello --name axn            # module loads on first dispatch
+----
+
+== Shipping a skill with your plugin
+
+Drop a skill directory into your package and it ships with the plugin:
+
+----
+my-plugin/
+├── skills/
+│   └── axn-dev-hello/
+│       └── SKILL.md
+├── src/index.ts
+└── package.json
+----
+
+`axn-dev install --skills` aggregates skills from the CLI package, core, and
+every discovered plugin, so your skill installs alongside the built-in ones
+(`axn-dev install --skill axn-dev-hello` works too).
+
+== Debugging discovery
+
+[source,bash]
+----
+node -e "
+import { discoverPlugins } from '@axn-dev/core';
+console.log(discoverPlugins().map(p => \`\${p.name} \${p.dir}\`));
+" --input-type=module
+----
+
+If your command doesn't show up: check that `package.json` parses, that
+`axn-dev.commands` is non-empty, and that the package sits in a scanned root.
+If it shows up but fails to run, check `axn-dev <name> --help` — entry
+resolution errors surface there.

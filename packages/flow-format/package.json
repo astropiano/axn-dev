@@ -1,0 +1,38 @@
+{
+  "name": "@axn-dev/flow-format",
+  "version": "0.1.0",
+  "description": "axn-dev flow format \u2014 XML flow parser, types, reports, and manual flow runner",
+  "type": "module",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rimraf dist",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.11.0"
+  },
+  "peerDependencies": {
+    "@axn-dev/core": "*"
+  },
+  "devDependencies": {
+    "@axn-dev/core": "workspace:*"
+  },
+  "private": false,
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}

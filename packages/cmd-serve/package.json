@@ -1,0 +1,51 @@
+{
+  "name": "@axn-dev/cmd-serve",
+  "version": "0.1.0",
+  "description": "axn-dev serve command \u2014 proxy server with dashboard and scenario/flow management",
+  "type": "module",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "axn-dev": {
+    "commands": [
+      {
+        "name": "serve",
+        "description": "Start the axn-dev proxy server (dashboard + Caddy management)",
+        "flags": [
+          "--stop",
+          "--workbase",
+          "--help",
+          "-h"
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "prepublishOnly": "pnpm build"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@axn-dev/flow-format": "workspace:*"
+  },
+  "peerDependencies": {
+    "@axn-dev/core": "*"
+  },
+  "devDependencies": {
+    "@axn-dev/core": "workspace:*"
+  },
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}

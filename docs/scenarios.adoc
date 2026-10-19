@@ -1,0 +1,199 @@
+== Scenarios (start / stop / patch / list / clean)
+
+[source,bash]
+----
+axn-dev list                          # Show available scenarios (repo-local + global)
+axn-dev start                         # Auto-detect single scenario in current repo
+axn-dev start -s myapp-mock -- -d     # Start a named global scenario (detached)
+axn-dev stop -s myapp-mock
+axn-dev stop -s mock -- -v            # Also remove volumes
+axn-dev clean -s mock                 # Remove data volumes for a scenario
+axn-dev start -s mock --clean -y      # Wipe data volumes, then start fresh
+----
+
+== Scenario service exposure models
+
+A scenario can expose its services in one of two layouts.
+
+=== Multi-port model (default)
+
+The current default: each interesting service publishes its own host port in
+`compose.yaml` and `axn-dev.yaml` maps friendly names to those ports.
+
+Example `myapp-full`:
+
+[source,yaml]
+----
+description: "Full-stack: ..."
+proxies:
+  devtools: "${APP_DEV_TOOLS_PORT:-8091}"
+  frontend: "8092"
+  user-management: "8094"
+env:
+  APP_SERVER_PORT: "8090"
+  APP_DEV_TOOLS_PORT: "8091"
+  APP_USER_PORT: "8093"
+  APP_USER_FRONTEND_PORT: "8094"
+  KC_PORT: "8082"
+----
+
+`axn-dev list` and the `serve` dashboard resolve those ports to per-service
+URLs such as `http://localhost:8092` for the app frontend.
+
+This model is simple, but every service consumes a host port and the
+frontend must be configured with all the other ports (`API_URL`,
+`KEYCLOAK_URL`, etc.).
+
+[[caddy]]
+=== Single-port Caddy model
+
+A scenario can instead publish **only one host port** and run Caddy as a
+reverse proxy. Caddy routes by the `Host` header on that single port:
+
+[source]
+----
+http://app.localhost:8091      -> myapp-frontend
+http://devtools.localhost:8091  -> myapp2-devtools
+http://user-management.localhost:8091 -> myapp-users
+http://api.localhost:8091          -> myapp-api
+http://keycloak.localhost:8091     -> keycloak
+----
+
+This is useful for stacks like `myapp-full` where the cross-origin surface
+is large: all browser-facing traffic arrives on one origin/port and the
+CORS/cookie logic is handled by the Caddy layer. You can start/stop/patch
+the scenario on a chosen port:
+
+[source,bash]
+----
+axn-dev start -s myapp-full -p 8091
+axn-dev patch -s myapp-full -p 8091 --build api
+axn-dev stop  -s myapp-full -p 8091
+----
+
+A single-port scenario should be configured like this:
+
+1. `compose.yaml` publishes only the Caddy port, e.g. on a `caddy` service:
++
+[source,yaml]
+----
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "${SCENARIO_PORT:-8091}:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    # ... other services on the same Docker network, not published to the host
+----
+
+2. `axn-dev.yaml` uses full URL expressions pointing at the Caddy subdomain
+layout:
++
+[source,yaml]
+----
+description: "Single-port full stack routed by Caddy"
+frontendServices:
+  devtools:   "http://devtools.localhost:${SCENARIO_PORT:-8091}"
+  app:        "http://app.localhost:${SCENARIO_PORT:-8091}"
+  user-management: "http://user-management.localhost:${SCENARIO_PORT:-8091}"
+backendServices:
+  api:      "http://api.localhost:${SCENARIO_PORT:-8091}"
+  keycloak: "http://keycloak.localhost:${SCENARIO_PORT:-8091}"
+env:
+  SCENARIO_PORT: "8091"
+  API_URL: "http://api.localhost:${SCENARIO_PORT:-8091}"
+  KEYCLOAK_URL: "http://keycloak.localhost:${SCENARIO_PORT:-8091}"
+  KC_HOSTNAME: "keycloak.localhost"
+  KC_HOSTNAME_PORT: "${SCENARIO_PORT:-8091}"
+----
+
+Caddy's `Host` matcher strips the port from the `Host` header, so a
+Caddyfile route such as `Host devtools.localhost` works for
+`http://devtools.localhost:8091`.
+
+`axn-dev` detects a single-port scenario by the presence of a
+`SCENARIO_PORT` variable in `compose.yaml` and adds `-p/--port` support to
+`start`, `stop`, `patch`, `list` and `serve`.
+
+To run a global scenario from a different integration-repo worktree without
+changing `~/.axn-dev/config.yaml`, pass `--workbase <branch>` to `start`,
+`stop`, `patch` or `serve`. This resolves `integration:` paths to the
+checkout/worktree on that branch, e.g.
+`axn-dev start -g -s myapp-full -p 8091 --workbase feature/myapp-single-port-proxy`.
+
+==== Keycloak redirect URIs with dynamic `SCENARIO_PORT`
+
+A single-port scenario can be started on any host port with `axn-dev start -s <scenario> -p <port>`.
+Keycloak validates `redirect_uri` and `webOrigins` for each client, so a stack that uses
+Keycloak must update those values to match the chosen port.
+
+The recommended pattern is an init container in the scenario `compose.yaml`:
+
+[source,yaml]
+----
+  keycloak:
+    image: keycloak:local
+    command: ["start-dev", "--http-port", "8082", "--import-realm"]
+    # ... keycloak environment and healthcheck
+
+  keycloak-setup:
+    image: keycloak:local
+    entrypoint: ["/bin/sh"]
+    command: ["/opt/keycloak/data/import/keycloak-setup.sh"]
+    restart: "no"
+    environment:
+      SCENARIO_PORT: "${SCENARIO_PORT:-8091}"
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    networks:
+      - app-network
+----
+
+The `keycloak-setup` one-shot uses `kcadm.sh` to patch the relevant clients
+(`myapp-frontend`, `myapp-admin`, etc.) with `redirectUris` and `webOrigins`
+for the current `SCENARIO_PORT`. This avoids manually editing the realm JSON for
+each port and does not require wiping the Keycloak database when the port changes.
+
+The script only needs the Keycloak admin credentials and `SCENARIO_PORT` in its
+environment; it calls `kcadm.sh config credentials`, waits for the master realm
+to be reachable, and then updates each client with a generated JSON file that
+contains all single-port Caddy subdomains for the current port.
+
+=== Patching a running scenario
+
+Rebuild and/or restart specific services without touching the rest of the stack:
+
+[source,bash]
+----
+axn-dev patch -s app-dev app-server                          # restart only
+axn-dev patch -s app-dev app-server --build                  # rebuild + restart
+axn-dev patch -s app-dev app-server --no-cache               # rebuild without cache + restart
+axn-dev patch -s app-dev svc1 svc2 --build                   # patch multiple services
+----
+
+The scenario must already be running. Uses `docker compose up -d --no-deps` under the hood so dependent services are not affected.
+
+The CLI auto-detects the current repo by walking up from `cwd`.
+Per-repo paths from config are injected as env vars (e.g. `MYAPP_SERVER_ROOT`).
+
+When in a project with an `.axn-dev` folder, the CLI checks project scenarios first, then falls back to global.
+
+== Web dashboard (`axn-dev serve`)
+
+`axn-dev serve` starts a local web UI that lists both scenarios and flows.
+
+Scenario tags are read from each scenario's `axn-dev.yaml` `tags:` list. Flow tags are read from the flow XML `<tags><tag>...</tag></tags>` element. Tags are shown as badges and can be filtered with the tag search box. Searching for a parent tag such as `myapp` also shows items tagged with `myapp/e2e`.
+
+The dashboard has two views:
+
+- **Table** (default) — sortable list of scenarios or flows with tag badges.
+- **Tree** — tag folders built from slash-separated tags. Untagged items appear in an *Untagged* group at the top.
+
+The selected view and dashboard filters are remembered in `localStorage`.
+

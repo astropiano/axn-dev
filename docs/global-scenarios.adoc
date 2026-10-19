@@ -1,0 +1,35 @@
+== Global (Cross-Concern) Scenarios
+
+Global scenarios live in configured **integration repos** (listed under `integration:` in config).
+Each integration repo has a `scenarios/` folder:
+
+[source]
+----
+app-integration/
+└── scenarios/
+    ├── myapp-mock/
+    │   ├── compose.yaml
+    │   └── axn-dev.yaml      # optional metadata
+    └── myapp-full/
+        └── compose.yaml
+----
+
+=== axn-dev.yaml (scenario metadata)
+
+Optional config file alongside `compose.yaml`:
+
+[source,yaml]
+----
+description: "Full-stack mock: API server + hardware emulator + frontend devtools"
+tags:
+  - myapp
+  - myapp/e2e
+env:
+  MYAPP_SERVER_PORT: "5001"
+  MYAPP_HARDWARE_APP_PORT: "8082"
+----
+
+- **description** — shown in `axn-dev list`
+- **tags** — optional list of labels for grouping and filtering in `axn-dev serve`. Supports plain tags and slash-separated paths such as `myapp` or `myapp/e2e`.
+- **env** — default env vars passed to `docker-compose`
+

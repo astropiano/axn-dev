@@ -1,0 +1,42 @@
+== Quick Start
+
+[source,bash]
+----
+cd axn-dev-cli
+pnpm install
+pnpm build
+./build-link.sh   # builds all packages and npm-links 'axn-dev' globally
+
+# Configure your environment (interactive)
+axn-dev init
+
+# Or auto-scan a workspace directory of git checkouts
+axn-dev init --scan ~/repos
+
+# Or bootstrap from a GitLab group (clone + register)
+axn-dev setup --group myorg/dev --dir ~/repos
+----
+
+After `init`, verify everything works:
+
+[source,bash]
+----
+axn-dev list      # Should show available scenarios
+----
+
+=== Linux global link permissions
+
+`build-link.sh` runs `npm link` inside `packages/cli`, which links `axn-dev`
+into npm's global prefix. On Linux that may fail with `EACCES` if the
+prefix is not user-owned. Point npm at a user-owned prefix instead:
+
+[source,bash]
+----
+npm config set prefix ~/.local
+----
+
+Ensure `~/.local/bin` is on your `PATH` (e.g. in `~/.zshrc`), reload your
+shell, and rerun `./build-link.sh` from this repository root. The linked
+package resolves `@axn-dev/core` and discovers the sibling `packages/*`
+plugins automatically.
+

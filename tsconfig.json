@@ -1,0 +1,15 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/cli" },
+    { "path": "packages/flow-format" },
+    { "path": "packages/cmd-flow" },
+    { "path": "packages/cmd-serve" },
+    { "path": "packages/cmd-know" },
+    { "path": "packages/cmd-dotenv" },
+    { "path": "packages/cmd-overview" },
+    { "path": "packages/cmd-c4model" },
+    { "path": "packages/adapter-keycloak" }
+  ]
+}

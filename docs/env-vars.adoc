@@ -1,0 +1,71 @@
+== Environment Variables (injected by CLI)
+
+Every repo registered under `repos:` in `~/.axn-dev/config.yaml` gets its
+absolute path injected into the scenario environment as a `<NAME>_ROOT`
+variable — the repo name uppercased with `-`/`_` normalized:
+
+|===
+| Config entry | Injected variable
+
+| `repos: { my-server: /path/to/my-server }`
+| `MY_SERVER_ROOT=/path/to/my-server`
+
+| `repos: { my-tool: /path/to/my-tool }`
+| `MY_TOOL_ROOT=/path/to/my-tool`
+|===
+
+Compose files should reference repo checkouts through these vars (e.g.
+`${MY_SERVER_ROOT}/Dockerfile`) instead of hardcoding absolute paths.
+
+The naive `<NAME>_ROOT` stem can be overridden per repo by writing the entry
+in object form with an `env` alias:
+
+[source,yaml]
+----
+repos:
+  myapp-server: { path: /path/to/server, env: MYAPP_API }  # → MYAPP_API_ROOT
+----
+
+If the alias already ends in `_ROOT` it is used as-is. A plugin config
+section whose scalar value resolves to an existing directory also
+contributes a repo (and its `<NAME>_ROOT` var) — see
+link:architecture.adoc[Architecture → Configuration].
+
+Other injected variables:
+
+|===
+| Variable | Source
+
+| `SCENARIO_PORT`
+| `-p`/`--port` (or `--auto-port`) on start/stop/patch, when the scenario opts into port reassignment
+
+| `SCENARIO_VARIANT`
+| The scenario-root qualifier for repos with nested `scenarios.roots`
+|===
+
+On top of these, drivers layer `.env` files found in the scenario directory
+(`fileEnv`/`runningEnv` driver hooks — e.g. sticky auto-assigned ports), and
+`env:` entries from `axn-dev.yaml` act as defaults that explicit flags
+override.
+
+=== Port configuration (example)
+
+Scenario-level ports are just env vars — declared in the scenario's
+`axn-dev.yaml` `env:` block or in compose. A typical product stack might
+use:
+
+|===
+| Variable | Description | Example default
+
+| `MYAPP_SERVER_PORT`
+| Host port for the backend API
+| `5001` (mock), `5000` (full)
+
+| `MYAPP_HARDWARE_APP_PORT`
+| Host port for a device/emulator app
+| `8081`
+
+| `MYAPP_DEVTOOLS_PORT`
+| Host port for frontend devtools
+| `4200`
+|===

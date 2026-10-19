@@ -1,0 +1,44 @@
+{
+  "name": "@axn-dev/adapter-keycloak",
+  "version": "0.1.0",
+  "description": "axn-dev flow adapter: keycloak \u2014 create/delete/reset Keycloak users in flow steps",
+  "type": "module",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "axn-dev": {
+    "flowAdapters": [
+      {
+        "name": "keycloak",
+        "tags": [
+          "keycloak"
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "prepublishOnly": "pnpm build"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@axn-dev/core": "*"
+  },
+  "devDependencies": {
+    "@axn-dev/core": "workspace:*"
+  },
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "name": "@axn-dev/cmd-flow",
+  "version": "0.1.0",
+  "description": "axn-dev flow command \u2014 XML-defined flow tests against scenarios",
+  "type": "module",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "skills"
+  ],
+  "axn-dev": {
+    "flowAdapters": [
+      {
+        "name": "http",
+        "entry": "dist/adapters/http.js",
+        "tags": [
+          "usermessage"
+        ],
+        "wantsScenario": true
+      }
+    ],
+    "commands": [
+      {
+        "name": "flow",
+        "description": "Run XML-defined flow tests against scenarios",
+        "flags": [
+          "--file",
+          "-f",
+          "--model",
+          "-m",
+          "--filter",
+          "-t",
+          "--suite",
+          "--no-stop",
+          "--no-build",
+          "--clean-start",
+          "--manual",
+          "--adapter",
+          "--report",
+          "--report-format",
+          "--scenario",
+          "-s",
+          "--project",
+          "-p",
+          "--infra",
+          "-i",
+          "--global",
+          "-g",
+          "--workbase",
+          "--auto-port",
+          "--port",
+          "--pwd",
+          "-c",
+          "--yes",
+          "-y",
+          "-B",
+          "--help",
+          "-h"
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "prepublishOnly": "pnpm build"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "playwright-core": "^1.62.1",
+    "@playwright/test": "^1.62.1",
+    "pixelmatch": "^7.2.0",
+    "pngjs": "^7.0.0",
+    "@axn-dev/flow-format": "workspace:*"
+  },
+  "peerDependencies": {
+    "@axn-dev/core": "*"
+  },
+  "devDependencies": {
+    "@axn-dev/core": "workspace:*"
+  },
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}

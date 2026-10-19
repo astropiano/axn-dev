@@ -1,0 +1,38 @@
+{
+  "name": "@axn-dev/cli",
+  "version": "0.1.0",
+  "description": "axn-dev \u2014 modular development CLI (repos, scenarios, plugins)",
+  "type": "module",
+  "bin": {
+    "axn-dev": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "skills"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "prepublishOnly": "pnpm build"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@axn-dev/core": "workspace:*",
+    "@axn-dev/cmd-dotenv": "workspace:*",
+    "@axn-dev/cmd-overview": "workspace:*",
+    "@axn-dev/cmd-serve": "workspace:*"
+  },
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}

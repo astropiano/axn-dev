@@ -1,0 +1,46 @@
+== Configuration
+
+All repo paths are defined in `~/.axn-dev/config.yaml` (global) or `<git-root>/.axn-dev/config.yaml` (project-local override).
+
+[source,yaml]
+----
+# ~/.axn-dev/config.yaml
+
+# Integration repos — searched in order for global scenarios
+integration:
+  - ~/dev/app-integration
+
+# Single infra repo (for device deployments)
+infra: ~/infra/infra-repo
+
+# Repo checkout paths — injected as env vars for docker-compose
+# Plain form → <NAME>_ROOT; object form overrides the env-var stem
+repos:
+  myapp-server: ~/dev/myapp-server
+  myapp-frontend: { path: ~/dev/myapp-frontend, env: MYAPP_UI }
+  myapp-hardware: ~/dev/myapp-hardware
+  myapp-contracts: ~/dev/myapp-contracts
+----
+
+Each `repos` entry injects `<NAME>_ROOT` (or `<env>_ROOT` when the object
+form's `env` stem is given) into the scenario environment — see
+link:env-vars.adoc[Environment Variables].
+
+=== Config resolution
+
+1. Project-local: `<git-root>/.axn-dev/config.yaml`
+2. Global: `~/.axn-dev/config.yaml`
+
+Local values take precedence. Lists and maps are merged (local first).
+
+=== Plugin sections
+
+Core owns only `integration`, `repos`, `auto-port`, `auto-port-range` and
+`worktrees`. Every other top-level key is a *plugin section* passed through
+verbatim to whichever package consumes it — e.g. `adapters:` (`@axn-dev/cmd-flow`),
+`gitlab-group:` (`axn-dev setup`), or any plugin-owned section like an
+infra plugin's `infra:`. A scalar section whose value resolves to
+an existing directory also registers that directory
+as a workspace repo. See link:architecture.adoc[Architecture →
+Configuration].
+

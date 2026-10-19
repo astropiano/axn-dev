@@ -1,0 +1,55 @@
+{
+  "name": "@axn-dev/cmd-c4model",
+  "version": "0.1.0",
+  "description": "axn-dev c4model command \u2014 C4 decomposition helpers for AI agents (scan, init, render)",
+  "type": "module",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "skills"
+  ],
+  "axn-dev": {
+    "commands": [
+      {
+        "name": "c4model",
+        "description": "C4 decomposition helpers for AI agents (scan, init, render)",
+        "flags": [
+          "scan",
+          "init",
+          "render",
+          "--repo",
+          "--title",
+          "--input",
+          "--dir",
+          "--format",
+          "--out",
+          "--help",
+          "-h"
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "prepublishOnly": "pnpm build"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@axn-dev/core": "*"
+  },
+  "devDependencies": {
+    "@axn-dev/core": "workspace:*"
+  }
+}

@@ -1,0 +1,35 @@
+== Repo Detection
+
+Repo detection is fully generic — there is no built-in repo list. The CLI
+walks up from your current directory to the first directory containing a
+`.git` entry (a regular checkout or a linked worktree both count).
+
+The repo's canonical name comes from the `remote.origin` URL basename
+(minus `.git`), falling back to the directory name. This is what makes
+worktrees transparent: a linked worktree of a repo resolves to the same
+repo name as the main checkout.
+
+Once the repo root is known, scenario discovery scans each *scenario root*
+the repo declares. By default that is just the repo root itself, i.e.
+`<repo>/scenarios/<name>`. A repo with a nested layout declares its roots
+in its own `<repo>/.axn-dev/config.yaml` (not merged from the global file):
+
+[source,yaml]
+----
+scenarios:
+  roots: variants/*        # dirs that own a scenarios/ subdir
+----
+
+`*` inside a path segment matches one directory name. For every expanded
+root, `<root>/scenarios/` is scanned and the root's basename becomes the
+scenario *variant* qualifier — so `variants/gen2/scenarios/sim` is
+addressable as `gen2/sim` and sees `SCENARIO_VARIANT=gen2` in its env.
+
+When your cwd sits inside a nested root, discovery is scoped to that
+variant; at the repo root all variants are scanned (or just the single one,
+when exactly one exists).
+
+A repo only joins the wider *workspace* — cross-repo scenario listing,
+`<NAME>_ROOT` env injection, `axn-dev git`, `axn-dev overview` — when it is
+registered in `~/.axn-dev/config.yaml` under `repos:` (or `integration:`
+for global-scenario carriers). See link:config.adoc[Configuration].

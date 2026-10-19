@@ -1,0 +1,43 @@
+{
+  "name": "axn-dev-cli-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "axn-dev \u2014 plugin-based development CLI: Docker Compose scenarios, flows, workspaces",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "AXN_DEV_PLUGIN_DIRS=packages node --import tsx --conditions=development packages/cli/src/main.ts",
+    "start": "AXN_DEV_PLUGIN_DIRS=packages node packages/cli/dist/main.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc -b --emitDeclarationOnly false --noEmit",
+    "lint": "eslint packages/*/src/",
+    "clean": "tsc -b --clean && rm -rf packages/*/dist",
+    "version:sync": "node scripts/set-version.mjs",
+    "publish:public": "pnpm -r publish --access public"
+  },
+  "keywords": [
+    "cli",
+    "docker",
+    "compose",
+    "scenarios"
+  ],
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.13.0",
+    "@types/pixelmatch": "^7.1.0",
+    "@types/pngjs": "^6.0.5",
+    "@vitest/coverage-v8": "^4.1.5",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.5"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "sharp"
+    ]
+  },
+  "packageManager": "pnpm@10.30.3+sha512.c961d1e0a2d8e354ecaa5166b822516668b7f44cb5bd95122d590dd81922f606f5473b6d23ec6a5be05e7fcd18e8488d47d978bbe981872f1145d06e9a740017"
+}

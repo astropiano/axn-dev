@@ -1,0 +1,51 @@
+= axn-dev
+
+A modular development CLI for managing Docker Compose dev scenarios across multiple configured repositories — with a plugin architecture for commands, scenario drivers, flow adapters, and agent skills.
+
+This repository is a *pnpm workspace* of individually publishable packages.
+The `axn-dev-cli` package provides the `axn-dev` bin; `@axn-dev/core` is the
+shared library; every other package is a plugin discovered at runtime —
+command plugins (`@axn-dev/cmd-*`), scenario-type plugins
+(`@axn-dev/type-*`), and flow-adapter plugins (`@axn-dev/adapter-*`). See
+link:docs/architecture.adoc[Architecture] and
+link:docs/plugins.adoc[Writing a Plugin].
+
+== Quick Start
+
+[source,bash]
+----
+cd axn-dev-cli
+pnpm install
+pnpm build
+./build-link.sh     # builds all packages and npm-links the axn-dev bin globally
+axn-dev --help
+----
+
+For npm-link permission workarounds and the full setup, see link:packages/cli/docs/install.adoc[Install].
+
+== Repository layout
+
+[source]
+----
+packages/
+├── core/               # @axn-dev/core — command/plugin/driver/adapter APIs + utilities
+├── cli/                # axn-dev-cli — the axn-dev bin (init, setup, install, completion)
+├── cmd-*/              # command plugins: flow, serve, infra, hw, know, dotenv,
+│                       #   overview, test
+├── type-*/             # scenario-type plugins (@axn-dev/type-*)
+└── adapter-*/          # flow-adapter plugins: adapter-keycloak
+----
+
+== Documentation
+
+- link:packages/cli/docs/install.adoc[Quick Start]
+- link:docs/config.adoc[Configuration]
+- link:docs/scenarios.adoc[Scenarios (start / stop / patch / list / clean)] — includes the link:docs/scenarios.adoc#caddy[single-port Caddy model]
+- link:packages/cmd-flow/docs/flow.adoc[Flow Testing]
+- link:docs/repo-detection.adoc[Repo Detection]
+- link:docs/global-scenarios.adoc[Global (Cross-Concern) Scenarios]
+- link:docs/architecture.adoc[Architecture]
+- link:docs/plugins.adoc[Writing a Plugin]
+- link:docs/env-vars.adoc[Environment Variables (injected by CLI)]
+- link:packages/cmd-dotenv/docs/dotenv.adoc[Dotenv Backup & Restore]
+- link:packages/cmd-know/docs/know.adoc[Knowledge Index (axn-dev know)]

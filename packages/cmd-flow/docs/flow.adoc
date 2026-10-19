@@ -1,0 +1,270 @@
+== Flow Testing
+
+Run XML-defined agentic flow tests against Docker Compose scenarios.
+
+[source,bash]
+----
+axn-dev flow -f flows/example.xml
+axn-dev flow -f flows/example.xml -m llama3.1:latest
+axn-dev flow -f flows/example.xml -t "how late"
+axn-dev flow -f flows/example.xml --no-stop    # keep scenario running after test
+axn-dev flow -f flows/example.xml --clean-start --yes   # wipe data and run without prompting
+----
+
+The `--clean-start` flag stops the scenario(s), removes their named Docker volumes, and starts them fresh before the flow runs. It does not rebuild images. It is not compatible with `--infra`.
+
+A flow file describes one or more `<flow>` elements with scenarios, models, a user message, and assertions. The built-in `tsAdapter` runs TypeScript/Playwright scripts; all other adapters come from plugin packages — `http` (generic, bundled with `cmd-flow`), `keycloak` (`@axn-dev/adapter-keycloak`), or any adapter an installed plugin declares — or from script files resolved per step. Assertions: `num_responses`, `contains`, `exitCode` and `screenshot`. Reports are written to `flows/.reports/` next to the flow file.
+
+=== Screenshot assertions
+
+`<assert that="screenshot" value="refs/button.png" .../>` captures a page — or a single HTML element — with headless Chromium and compares it pixel-by-pixel against a reference PNG stored next to the flow file (`value` is resolved relative to the flow file). Anti-aliasing noise is ignored, but structural changes (a button that moved, or went from rectangular to rounded) fail the assertion.
+
+[source,xml]
+----
+<assertions>
+  <!-- element: crop to #buy; also fails if the button moved position -->
+  <assert that="screenshot" value="refs/buy-button.png" selector="#buy"
+          url="${BASE_URL}/shop"/>
+  <!-- whole viewport page -->
+  <assert that="screenshot" value="refs/shop.png" url="${BASE_URL}/shop"
+          viewport="1280x800" wait="500"/>
+</assertions>
+----
+
+Attributes:
+
+`value` (required):: Reference PNG path, relative to the flow file.
+`url`:: Page URL; supports `${VAR}`/`${VAR:-default}` expansion against the flow env. Defaults to `BASE_URL`.
+`selector`:: CSS selector — capture only this element. The image is cropped to the element's own box, so it detects content/shape changes (text, color, border-radius, …) but is blind to *position*: a moved element looks identical. To catch moves, select a container element or omit `selector` for a whole-page capture.
+`fullPage`:: `true` = capture the full scrollable page (only without `selector`).
+`maxDiff`:: Max allowed fraction of differing pixels, `0..1` (default `0.01` = 1%).
+`threshold`:: Per-pixel color distance threshold `0..1` (default `0.1`).
+`viewport`:: `"WxH"` (default `1280x800`).
+`wait`:: Settle wait — milliseconds (`"500"`) or a CSS selector to wait for after page load.
+
+On failure, the actual capture and a highlighted diff image (red = real diff, yellow = antialiasing) are written to `flows/.reports/screenshots/`. Run with `AXN_FLOW_UPDATE_SCREENSHOTS=1` to create or refresh a reference. Requires `playwright-core` and a Chromium build (`npx playwright install chromium`).
+
+=== Flow tags
+
+Flows can be tagged for grouping and filtering in `axn-dev serve`:
+
+[source,xml]
+----
+<flow name="app-e2e">
+  <tags>
+    <tag>myapp</tag>
+    <tag>myapp/e2e</tag>
+    <tag>ux</tag>
+  </tags>
+  <scenarios>...
+  </scenarios>
+  ...
+</flow>
+----
+
+Tags may be plain words (`myapp`, `ux`) or slash-separated folder paths (`myapp/e2e`). In `axn-dev serve` the tag search matches prefixes and path segments, so searching for `myapp` also shows flows tagged `myapp/e2e`.
+
+=== Step, message, and assertion descriptions
+
+You can also put the description inside the tag body when the real content is provided elsewhere:
+
+[source,xml]
+----
+<steps>
+  <usermessage value="What time is it?">Ask about the current time</usermessage>
+  <step src="steps/login.ts" myArgs="xyz">Login of user</step>
+  <assertions>Login should succeed
+    <assert that="contains" value="welcome"/>
+  </assertions>
+</steps>
+----
+
+For `<step>` and `<usermessage>`, the tag body becomes the `description` when a `src` or `value` attribute provides the actual content. For `<assertions>`, the tag body (before the `<assert>` children) becomes the description.
+
+=== Reusable step files
+
+A step can be factored out into its own `.xml` file and bound by name. The
+file must contain exactly one step element — a `<step>`/`<script>`, a
+`<usermessage>`, an `<assertions>` block, or a custom adapter tag — either as
+the root element or wrapped in a single-child `<steps>`.
+
+[source,xml]
+----
+<!-- flows/steps/login.xml — binds the TS script next to the step file -->
+<step src="ft-login.ts"/>
+----
+
+In the flow, `<step action="login"/>` binds `login.xml`. Step files are
+looked up in the flow's own directory, its `steps/` subdirectory, and every
+directory named in an `include` attribute (comma-separated, relative to the
+flow file) on `<flows>`, `<flow>` or `<steps>`:
+
+[source,xml]
+----
+<steps include="../shared/step-lib, ../shared/more-steps">
+  <step action="login" user="mom"/>
+  <step file="steps/logout.xml"/>
+</steps>
+----
+
+Rules:
+
+* `src`/`script` paths inside the step file resolve relative to the step
+  file's directory (`script` is an alias for `src` on `<step>`).
+* If the same name exists in several step dirs, the flow fails with the
+  candidate list — disambiguate with `<step file="..."/>`.
+* `file=` must point to an `.xml` file and cannot be combined with `src` or
+  `adapter`.
+* `action=` is only a step-file reference on a plain `<step>`; with
+  `adapter="..."` it stays an adapter argument (e.g. `action="createUser"`).
+* Extra attributes on the referencing step merge into the bound step's args
+  (caller wins); `desc`/`description` or tag text override the description.
+* Step files may reference further step files; circular references are an
+  error.
+
+=== Evidence capture
+
+`<picture>` and `<video>` are inline step units — like `<assertions>` they can
+sit anywhere between steps and capture evidence at that point in the run.
+Both require an orchestrator-driven `tsAdapter` flow (a browser must exist);
+on other adapters the run fails with an error.
+
+[source,xml]
+----
+<steps>
+  <step src="steps/login.ts">Log in via Keycloak</step>
+
+  <picture name="after-login" />                        <!-- viewport screenshot -->
+  <picture name="grid" selector=".data-grid" /> <!-- element screenshot -->
+  <picture name="full" fullPage="true" />               <!-- full scrollable page -->
+
+  <video name="booking">                                <!-- start recording -->
+    <step src="steps/open-booking.ts" />
+    <step src="steps/confirm.ts" />
+  </video>                                              <!-- stop + save .webm -->
+
+  <assertions><assert that="exitCode" value="0"/></assertions>
+</steps>
+----
+
+`<picture name="..."/>` captures a screenshot where it sits in the step order:
+the viewport by default, a single element with `selector`, or the whole
+scrollable page with `fullPage="true"`.
+
+`<video name="...">` wraps the steps it should record. Steps inside execute
+normally; the recording boundaries are driven by the orchestrator's
+`videoStart(name, dir)` / `videoStop(name)` hooks (see below). If a step inside
+the video fails, the recording is still finalized so the evidence is kept.
+
+Artifacts are written to `flows/.reports/evidence/<flow>-<timestamp>/`
+(alongside the JSON reports in the gitignored `.reports/` dir) and listed in
+the JSON report under `flows[].evidence` (`{kind, name, path}`).
+The `axn-dev serve` report view renders screenshots inline and plays videos.
+
+==== Evidence in manual runs
+
+In manual mode (`--manual` or the serve manual view) the human supplies the
+evidence: every step card has an "Attach evidence" file input (web) or an
+"Attach evidence file" prompt (CLI). This is especially useful for failed
+steps — attach a screenshot of the broken state. Files land in the same
+`.reports/evidence/` layout and are recorded with their `stepIndex`, so
+the report shows them next to the step they belong to.
+
+==== Orchestrator contract
+
+An orchestrator module exports `start(baseUrl, env)`, `run(steps)` and
+`stop()`. For `<video>` support it additionally implements:
+
+* `videoStart(name: string, dir?: string)` — begin recording (e.g. swap in a
+  `recordVideo` browser context, preserving storage state and current URL).
+* `videoStop(name: string)` — stop recording, finalize the artifact in `dir`,
+  and return its absolute path (or `void`).
+
+The host splits each `run()` batch at video boundaries and calls the hooks
+between segments, so `run()` itself never sees markers. Orchestrators without
+the hooks fail with a clear error when a `<video>` step runs.
+
+=== Plugin adapters
+
+Flow adapters are contributed by plugin packages via the
+`axn-dev.flowAdapters` manifest (see `docs/plugins.adoc` at the repo root). An adapter name on
+`<step adapter="...">`, `<usermessage adapter="...">` or
+`<scenario adapter="...">` resolves to a registered plugin adapter, which
+runs in-process with a typed context (`env`, `baseUrl`, `scenario`, `model`,
+`runScript`, ...). An adapter may also own custom step tags — a
+`<keycloak .../>` step, for instance, dispatches to the adapter declaring the
+`keycloak` tag in its manifest.
+
+`axn-dev flow list-adapters` lists the registered adapters and their tags.
+`http` (generic POST of the `usermessage` to a scenario base URL) is bundled
+with `cmd-flow`; `keycloak` ships as `@axn-dev/adapter-keycloak`. Further
+adapters — including ones that serve custom XML tags — come from installed
+plugins.
+
+=== External script adapters
+
+Any `<step>` whose `adapter` name is *not* a registered plugin adapter falls
+back to a script file. `axn-dev` resolves the name in this order:
+
+1. `--adapter <name=path>` on the command line
+2. `adapters:` in `.axn-dev/config.yaml`
+3. The file pointed to by the step's `src` attribute (relative to the flow file)
+4. `adapters/<adapter>.ts`
+5. `adapters/<adapter>.js` next to the flow file
+
+The adapter is executed with `tsx` (for `.ts`) and receives the whole `ParsedStep` JSON in `process.env.AXN_STEP`, plus the merged flow environment variables. Product-specific logic such as a Keycloak adapter can therefore live in the product repo instead of `axn-dev-cli`.
+
+[source,xml]
+----
+<step adapter="keycloak" action="createUser"
+      username="schmid_mom" email="mom@schmid.family"
+      firstName="Mara" lastName="Schmid" password="schmid_mom"
+      role="admin">Create a fresh parent user</step>
+----
+
+The corresponding `adapters/keycloak.ts` reads the action and attributes from `process.env.AXN_STEP` and prints the result to stdout.
+
+=== Device targets
+
+`axn-dev flow -i <device>` runs tsAdapter flows against a deployed device. The
+device is resolved from `devices/<device>/device.yaml` under the configured
+`infra:` repo (see the infra plugin docs for the repo layout). The device's
+`host` becomes `BASE_URL`; `devices/<device>/.env` entries are merged into the
+flow environment.
+
+=== Keycloak adapter
+
+The `keycloak` adapter (`@axn-dev/adapter-keycloak` plugin package) creates,
+deletes or resets Keycloak users through the Admin API — either via
+`<step adapter="keycloak" .../>` or the `<keycloak .../>` tag it owns.
+
+[source,xml]
+----
+<env>
+  <var name="KEYCLOAK_ADMIN_USER" value="admin" />
+  <var name="KEYCLOAK_ADMIN_PASSWORD" value="admin" />
+  <var name="KEYCLOAK_REALM" value="myapp-dev" />
+  <var name="KC_URL" value="http://keycloak.localhost:${SCENARIO_PORT}" />
+</env>
+
+<steps>
+  <step adapter="keycloak" action="createUser"
+        username="mom" email="mom@example.family"
+        firstName="Mara" lastName="Schmid" password="mom" />
+</steps>
+----
+
+Supported actions are `createUser`, `deleteUser` and `resetPassword`.
+
+=== Machine-local SSH overrides
+
+Create `devices/<device>/device.local.yaml` (gitignored) to override SSH settings
+for your machine without committing them:
+
+[source,yaml]
+----
+key: ~/.ssh/id_rsa          # private key path
+user: deploy               # if your local username differs
+port: 2222                 # if you use a non-standard port
+----
+

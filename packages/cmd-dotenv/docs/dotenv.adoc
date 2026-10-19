@@ -1,0 +1,58 @@
+= Dotenv Backup & Restore
+
+The `backup dotenv` and `restore dotenv` commands manage `.env` files for infra and scenario deployments.
+
+== Prerequisites for Bitwarden
+
+The Bitwarden integration uses the `bw` CLI. Install it globally:
+
+[source,bash]
+----
+npm install -g @bitwarden/cli
+----
+
+Then log in and export a session token:
+
+[source,bash]
+----
+bw login                 # only once per account
+export BW_SESSION=$(bw unlock --raw)
+----
+
+== Backup
+
+In most shells, quote the wildcard so the shell does not expand it to local files (e.g. `dist`).
+
+Back up all infra `.env` files:
+
+[source,bash]
+----
+axn-dev backup dotenv --infra '*' --bitwarden
+----
+
+Back up a single scenario:
+
+[source,bash]
+----
+axn-dev backup dotenv -s dev --bitwarden
+----
+
+Use `--force` to overwrite notes that already exist in Bitwarden.
+
+== Restore
+
+Restore infra `.env` files:
+
+[source,bash]
+----
+axn-dev restore dotenv --bitwarden --infra '*' --force
+----
+
+Restore all scenario `.env` files:
+
+[source,bash]
+----
+axn-dev restore dotenv --bitwarden --scenario '*' --force
+----
+
+Without `--bitwarden`, both commands operate on local tar/directory backups; `restore dotenv --from <path>` defaults to `~/.axn-dev/dotenv-backups/dotenv-backup.tar`.

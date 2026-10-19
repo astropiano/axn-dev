@@ -1,0 +1,32 @@
+{
+  "name": "@axn-dev/core",
+  "version": "0.1.0",
+  "description": "Axn-dev core library \u2014 command interface, registry, plugin loader, scenario/workspace utilities",
+  "type": "module",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "skills"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "prepublishOnly": "pnpm build"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,91 @@
+= axn-dev know — Knowledge Index
+
+`axn-dev know` builds a local, searchable BM25/vector index over files (docs, code, config) and can split source code into semantic units (classes, methods, properties, sections).
+
+== Quick Start
+
+[source,bash]
+----
+# Index the docs in the current repo (project scope)
+axn-dev know add docs/ -s project
+axn-dev know index -s project
+
+# Search
+axn-dev know find "how to boot the device"
+----
+
+== Subcommands
+
+* `add <path>` — track a file or directory in a corpus.
+* `index` — re-index changed files and rebuild the search index.
+* `find "<query>"` — search and show top matching snippets.
+
+== Common Options
+
+[cols="1,1,3"]
+|===
+| Flag | Default | Description
+
+| `-s`, `--scope` | `global` | `global` uses `~/.axn-dev/`, `project` uses `<git-root>/.axn-dev/`.
+| `-c`, `--corpus` | `personal` / `project` | Named corpus. For `find`, `-c` can be repeated.
+| `-i`, `--indexing` | `bm25` | `bm25`, `vector`, or `hybrid`.
+| `-n` | `5` | Number of results for `find`.
+|===
+
+== Semantic Code Extraction
+
+For supported languages `axn-dev know` extracts not only whole files, but individual units:
+
+* **TypeScript / JavaScript** — classes, interfaces, methods (including their doc comments).
+* **C#** — classes, methods, properties.
+* **AsciiDoc** — sections and subsections.
+* **Plain text / Markdown** — paragraphs and headings.
+
+Each unit becomes its own searchable document, so a query can return a specific class or method rather than the whole file.
+
+== Multi-Corpus Search
+
+Pass `-c` multiple times to search several corpora in a single query:
+
+[source,bash]
+----
+axn-dev know find "auth" -c axn-dev -c myapp-server -n 10
+----
+
+Results are merged and ranked across all specified corpora. The corpus name is shown next to each result.
+
+== Cross-Repo Code Search
+
+To search code across all repos registered in `~/.axn-dev/config.yaml`:
+
+1. Build the per-repo global corpora once:
++
+[source,bash]
+----
+~/dev/reindex-all-repos.sh
+----
++
+2. Re-run the same script to update all indices.
+3. Search everything at once:
++
+[source,bash]
+----
+~/dev/search-all-repos.sh "auth middleware" 10
+----
+
+== Storage Layout
+
+----
+~/.axn-dev/                              # global scope
+  corpora/
+    <corpus-name>/
+      corpus.yaml                        # config (name, indexing technique)
+      items/                             # one YAML per tracked file
+        <slug>.yaml
+      index.json                         # serialised index
+
+<git-root>/.axn-dev/                     # project scope
+  corpora/
+    <corpus-name>/
+      ...
+----

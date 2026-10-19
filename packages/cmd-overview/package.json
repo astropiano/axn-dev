@@ -1,0 +1,58 @@
+{
+  "name": "@axn-dev/cmd-overview",
+  "version": "0.1.0",
+  "description": "axn-dev overview command \u2014 machine-wide overview of open work across repos",
+  "type": "module",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "skills"
+  ],
+  "axn-dev": {
+    "commands": [
+      {
+        "name": "overview",
+        "description": "Generate a markdown overview of open work across configured repos",
+        "flags": [
+          "--group",
+          "-g",
+          "--no-fetch",
+          "--no-mr",
+          "--oneline",
+          "--output",
+          "--porcelain",
+          "--prune",
+          "--repo",
+          "--source-branch",
+          "--help",
+          "-h"
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "prepublishOnly": "pnpm build"
+  },
+  "license": "MIT",
+  "dependencies": {},
+  "peerDependencies": {
+    "@axn-dev/core": "*"
+  },
+  "devDependencies": {
+    "@axn-dev/core": "workspace:*"
+  },
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}

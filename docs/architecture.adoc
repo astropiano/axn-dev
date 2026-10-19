@@ -1,0 +1,289 @@
+== Architecture
+
+pnpm workspace monorepo of publishable packages. The core library
+(`@axn-dev/core`) provides the command interface, the registry, plugin
+loading, the scenario-type driver registry, the flow-adapter registry, and
+the scenario/workspace utility layer. Everything else lives in its own
+package and is discovered as a plugin — each package can ship its own agent
+skill under `skills/`.
+
+There are three plugin axes: *commands* (`cmd-*`), *scenario types*
+(`type-*`), and *flow adapters* (`adapter-*` or bundled into a `cmd-*`
+package).
+
+[source]
+----
+packages/
+├── core/                       # @axn-dev/core — publishable core library
+│   └── src/
+│       ├── index.ts            # public API surface
+│       ├── plugin.ts           # plugin discovery + LazyCommand
+│       ├── driver.ts           # ScenarioDriver interface + type registry
+│       ├── flow-adapter.ts     # FlowAdapter interface + adapter registry
+│       ├── drivers/            # built-in drivers: compose, shell
+│       ├── completion-helpers.ts
+│       ├── commands/
+│       │   ├── command.ts      # Command interface (incl. complete())
+│       │   ├── registry.ts     # CommandRegistry (resolve() unwraps lazy)
+│       │   ├── start.ts        # axn-dev start
+│       │   ├── stop.ts         # axn-dev stop
+│       │   ├── list.ts         # axn-dev list
+│       │   ├── clean.ts        # axn-dev clean
+│       │   ├── patch.ts        # axn-dev patch
+│       │   └── git.ts          # axn-dev git (multi-repo ops, worktrees)
+│       └── util/               # config, repo, scenario-discovery, compose,
+│                               # ports, worktree, dev-servers, git-exec
+├── cli/                        # axn-dev-cli — the bin
+│   └── src/
+│       ├── main.ts             # entry: builtins + plugin discovery + dispatch
+│       ├── completion.ts       # --complete engine (delegates to commands)
+│       ├── plugins.ts          # install/uninstall --plugin (~/.axn-dev/plugins)
+│       ├── repo-scan.ts        # workspace scan shared by init --scan / setup
+│       ├── skill-sources.ts    # skill aggregation across packages/plugins
+│       └── commands/           # meta: init, setup, install, uninstall,
+│                               #   completion
+├── cmd-*/                      # plugin command packages (@axn-dev/cmd-*)
+│   ├── cmd-flow/               # flow + flow-util, manualFlowRunner, screenshot,
+│   │                           #   bundled `http` adapter, script-file adapter
+│   │                           #   resolution, orchestrator-host
+│   ├── cmd-serve/              # serve web UI (uses @axn-dev/flow-format)
+│   ├── cmd-know/               # knowledge index (heavy NLP deps isolated here)
+│   ├── cmd-c4model/            # C4 decomposition helpers for AI agents
+│   ├── cmd-dotenv/             # backup / restore
+│   └── cmd-overview/           # machine-wide work overview
+├── type-*/                     # plugin scenario-type packages (@axn-dev/type-*)
+│   └── type-qemu/              # example: QEMU sim scenarios (sim.yaml marker)
+└── adapter-*/                  # plugin flow-adapter packages (@axn-dev/adapter-*)
+    └── adapter-keycloak/       # `keycloak` adapter — Keycloak Admin API steps
+----
+
+== Command contract
+
+Each command implements `Command` from `@axn-dev/core`:
+
+[source,ts]
+----
+interface Command {
+  readonly name: string;
+  readonly description: string;
+  execute(args: string[], options?: CommandExecuteOptions): Promise<void>;
+  help(): string;
+  complete?(words: string[]): string[] | Promise<string[]>;  // tab-completion
+}
+----
+
+== Plugins
+
+A plugin is any package whose `package.json` carries an `axn-dev` manifest:
+
+[source,json]
+----
+{
+  "name": "@axn-dev/cmd-know",
+  "axn-dev": {
+    "skills": "skills",                // optional, default "skills"
+    "commands": [
+      { "name": "know", "description": "...", "flags": ["--scope", "-s"] }
+    ]
+  }
+}
+----
+
+The entry module (manifest `main`, else `exports["."]`/`main`/`dist/index.js`)
+must export `commands: Command[]` (or a `Command`/array as default export).
+
+The CLI registers plugin commands lazily: manifest metadata serves `--help`
+and flag completion; the module is imported only when the command actually
+runs. Plugin roots scanned:
+
+- `$AXN_DEV_PLUGIN_DIRS` (path-delimited)
+- `~/.axn-dev/plugins/node_modules`
+- the directory containing the `axn-dev-cli` package (workspace siblings /
+  npm-installed siblings — zero config)
+
+== Scenario types (drivers)
+
+Scenario types are the second plugin axis: commands extend what you can
+*do*, drivers extend what a scenario *is*. A scenario's `type` is an open
+string resolved in two steps:
+
+1. an explicit `type:` in the scenario's `axn-dev.yaml` wins;
+2. otherwise the registered drivers' *markers* are probed in the scenario
+   directory (filenames like `compose.yaml`, `scenario.sh`, `sim.yaml`).
+
+Built-in types:
+
+* `compose` — `compose.yaml`/`docker-compose.yaml` (markers registered first,
+  so a dir carrying both a compose file and another marker stays compose)
+* `shell` — any scenario dir with an executable `scenario.sh`; the contract
+  is `scenario.sh start|stop|status <dir>`
+
+A plugin contributes a type via `axn-dev.scenarioTypes` in its manifest —
+the same discovery roots as command plugins:
+
+[source,json]
+----
+{
+  "axn-dev": {
+    "scenarioTypes": [
+      { "type": "qemu", "markers": ["sim.yaml"], "entry": "dist/index.js" }
+    ]
+  }
+}
+----
+
+Markers let type *detection* happen without importing the module; the entry
+module (which must export `driver: ScenarioDriver` or a default export) is
+imported lazily the first time a scenario of that type is driven.
+A `type-*` package needs no
+`commands` — driver-only plugins are discovered too.
+
+[source,ts]
+----
+interface ScenarioDriver {
+  readonly type: string;
+  isRunning(s: ScenarioInfo): Promise<boolean>;
+  isRunningSync?(s: ScenarioInfo): boolean;
+  start(s: ScenarioInfo, opts: DriverStartOptions): Promise<void>;
+  stop(s: ScenarioInfo): Promise<void>;
+  fileEnv?(path: string): Record<string, string>;       // .env layering
+  runningEnv?(path: string): Record<string, string>;    // sticky ports
+  resolvePortEnv?(s, baseEnv, opts): Promise<DriverPortEnvResult>;
+  urlEnv?(s): Record<string, string>;                   // ${VAR} expansion
+  endpoints?(s): { label: string; url: string; default?: boolean }[];
+}
+----
+
+`resolvePortEnv` opts into port reassignment (`--port` maps onto the driver's
+primary port; `--auto-port` applies to whatever the driver declares).
+`endpoints` feeds both `axn-dev list` and the serve dashboard — non-http
+entries (`ssh -p …` hints) are informational, `default: true` marks the
+preferred view.
+
+== Flow adapters
+
+Flow adapters are the third plugin axis: they decide how a step in an XML
+flow is executed (`axn-dev flow`). A package contributes adapters via
+`axn-dev.flowAdapters` in its manifest — same discovery roots as the other
+axes; the adapter module loads lazily on first dispatch:
+
+[source,json]
+----
+{
+  "axn-dev": {
+    "flowAdapters": [
+      {
+        "name": "keycloak",
+        "entry": "dist/index.js",
+        "tags": ["keycloak"],
+        "wantsScenario": true
+      }
+    ]
+  }
+}
+----
+
+`tags` are the step tags the adapter serves — known statically, so the flow
+engine routes `<keycloak .../>` or `<usermessage adapter="keycloak">`
+without importing the module. `wantsScenario` tells the engine to start the
+scenario and pass `ctx.baseUrl`. The adapter module exports `adapter`
+(a `FlowAdapter` or a factory `(base?: FlowAdapter) => FlowAdapter` for
+`extends:` composition).
+
+In this workspace: `http` ships bundled inside `@axn-dev/cmd-flow`;
+`keycloak` lives in `@axn-dev/adapter-keycloak`. The
+`FlowAdapter`/`FlowAdapterContext`/`FlowAdapterStep` types and the
+process-local adapter registry live in `core/src/flow-adapter.ts` — adapters
+must resolve `@axn-dev/core` to the CLI's copy (peer dependency) or their
+registrations land in a second, invisible registry.
+
+See link:plugins.adoc[Writing a Plugin] for the full contract.
+
+== Skills
+
+Each package may ship `skills/<name>/SKILL.md`. `axn-dev install --skills`
+aggregates skills from the CLI package, `@axn-dev/core`, and every discovered
+plugin — so a command plugin ships its agent skill alongside its code.
+
+== Configuration
+
+`~/.axn-dev/config.yaml` (merged with `<repo>/.axn-dev/config.yaml`, local
+wins) has two tiers:
+
+* *Core keys* — owned by `@axn-dev/core` and parsed into `AxnDevConfig`:
+  `integration`, `repos`, `auto-port`, `auto-port-range`, `worktrees`.
+  A `repos` entry is either a plain path or an object with an `env` stem
+  overriding the naive `<NAME>_ROOT` env var:
+
+[source,yaml]
+----
+repos:
+  my-tool: /path/to/my-tool                              # → MY_TOOL_ROOT
+  myapp-server: {path: /path/to/server, env: APP_SERVER}  # → APP_SERVER_ROOT
+----
+* *Plugin sections* — any other top-level key is a section owned by the
+  package that consumes it, exposed verbatim as `config.sections`:
+
+[source,yaml]
+----
+myinfra: /path/to/my-infra-repo  # owned by your infra plugin
+adapters:                        # owned by @axn-dev/cmd-flow
+  myadapter: /path/to/adapter.ts
+gitlab-group: myorg              # owned by axn-dev setup (cli)
+----
+
+A plugin reads its section via `configSection<T>(config, "name")` — the value
+is whatever `parseSimpleYaml` produced (scalar, map, or list). Sections merge
+local-over-global: maps merge per key, scalars/lists are replaced.
+
+*Repo-contributing sections:* a scalar section whose value resolves to an
+existing directory is treated as a repo declaration — it joins the workspace
+repo set under `basename(path)` (env var `<NAME>_ROOT`) and is covered by
+worktree scanning/`--workbase`. This is how `infra:` stays a repo for
+`axn-dev git` and `--workbase` without core knowing the infra repo exists.
+
+=== Scenario layout (`scenarios.roots`)
+
+By default a repo's scenarios live in `<repo>/scenarios/<name>`. A repo with
+a nested layout declares its own scenario roots in its *own*
+`.axn-dev/config.yaml` (read per repo — not merged from the global file):
+
+[source,yaml]
+----
+scenarios:
+  roots: product_*/*        # dirs that own a scenarios/ subdir
+----
+
+`roots` is a comma-separated list of repo-relative path patterns; `*`
+inside a segment matches one directory name. For every expanded root,
+`<root>/scenarios/` is scanned and the root's basename becomes the scenario
+`variant` qualifier — `t2p1v1` above — which qualifies names
+(`t2p1v1/vm-sim` for addressing) and is injected as `SCENARIO_VARIANT` into
+the scenario's env (an explicit `env:` entry in `axn-dev.yaml` wins).
+
+Running a command from inside a nested root scopes discovery to that
+variant; at the repo root all variants are scanned (or the single one, when
+exactly one exists). Integration repos use the same mechanism for global
+scenarios.
+
+== Development
+
+[source,bash]
+----
+pnpm install
+pnpm build          # tsc -b across all packages (project references)
+pnpm dev -- <args>  # run from source via tsx ("development" exports condition)
+pnpm test           # vitest across the workspace
+----
+
+To add a new core command: create `packages/core/src/commands/my-command.ts`
+implementing `Command` and register it in `packages/cli/src/main.ts`.
+
+To add a new plugin command: create `packages/cmd-foo/` with a package.json
+`axn-dev` manifest and a `src/index.ts` exporting `commands`. No registration
+needed — it is discovered automatically.
+
+To add a new global scenario:
+
+1. Add a `scenarios/<name>/` folder in an integration repo
+2. Include a `compose.yaml` (and optionally `axn-dev.yaml` for metadata)

@@ -1,0 +1,77 @@
+{
+  "name": "@axn-dev/cmd-dotenv",
+  "version": "0.1.0",
+  "description": "axn-dev backup/restore commands \u2014 dotenv file backup and restore",
+  "type": "module",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "axn-dev": {
+    "commands": [
+      {
+        "name": "backup",
+        "description": "Back up dotenv files",
+        "flags": [
+          "dotenv",
+          "--infra",
+          "-i",
+          "--scenario",
+          "-s",
+          "--base",
+          "--to",
+          "--tar",
+          "--bitwarden",
+          "--force",
+          "--help",
+          "-h"
+        ]
+      },
+      {
+        "name": "restore",
+        "description": "Restore dotenv files",
+        "flags": [
+          "dotenv",
+          "--from",
+          "-f",
+          "--base",
+          "--force",
+          "--bitwarden",
+          "--infra",
+          "-i",
+          "--scenario",
+          "-s",
+          "--help",
+          "-h"
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "prepublishOnly": "pnpm build"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
+  "peerDependencies": {
+    "@axn-dev/core": "*"
+  },
+  "devDependencies": {
+    "@axn-dev/core": "workspace:*"
+  },
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}
