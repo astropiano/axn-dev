@@ -1,7 +1,7 @@
 {
   "name": "@axn-dev/cmd-c4model",
   "version": "0.1.0",
-  "description": "axn-dev c4model command \u2014 C4 decomposition helpers for AI agents (scan, init, render)",
+  "description": "axn-dev c4model command — C4 decomposition helpers for AI agents (scan, init, render)",
   "type": "module",
   "exports": {
     ".": {
