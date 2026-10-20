@@ -1,0 +1,21 @@
+# Shared GitVersion config — used by BOTH the internal GitLab repo and the
+# public GitHub mirror (exported via public-export.json → rootFiles).
+#
+# The repos have different histories, so continuous/pre-release numbers
+# cannot match between them — only tagged releases are the contract:
+# compute the version on GitLab, tag `vX.Y.Z` there, sync package.jsons,
+# export, and tag the same name on GitHub. `gitversion` then yields the
+# same SemVer at every release commit on both sides.
+#
+# Note: GitVersion 6.x requires next-version INCLUDING the tag prefix.
+workflow: GitFlow/v1
+next-version: 'v0.1.0'
+tag-prefix: 'v'
+major-version-bump-message: '\+semver:\s?(breaking|major)'
+minor-version-bump-message: '\+semver:\s?(feature|minor|feat)'
+patch-version-bump-message: '\+semver:\s?(fix|patch)'
+branches:
+  develop:
+    label: beta
+  main:
+    label: ''

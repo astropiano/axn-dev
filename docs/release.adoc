@@ -1,0 +1,77 @@
+= Releasing
+
+axn-dev uses **GitVersion** with synced package versions — every public
+package publishes with the same `X.Y.Z`.
+
+== Two repos, one version
+
+The internal GitLab repo and the public GitHub mirror have different
+histories, so GitVersion's *continuous* numbers (commit-height suffixes)
+cannot match between them. The contract is the **tag**:
+
+1. Version is *computed on GitLab* (canonical history).
+2. `package.json` versions are synced and committed.
+3. `vX.Y.Z` is tagged on GitLab, the surface is exported, and the *same
+   tag* is placed on the mirrored GitHub commit.
+
+`GitVersion.yml` is identical on both sides (it exports with the rest of
+the public surface), so `gitversion` yields the same SemVer at every
+tagged release commit on either repo. Between tags, GitHub's pre-release
+height may differ — irrelevant: releases only happen through this flow.
+
+== Cutting a release (GitLab side)
+
+[source,bash]
+----
+git checkout develop && git pull
+
+# 1. Compute the version GitVersion would assign.
+#    Release version = the MajorMinorPatch part of the pre-release.
+node scripts/version-next.mjs            # e.g. 0.2.0-beta.3 → tag 0.2.0
+gitversion /showvariable MajorMinorPatch  # or ask GitVersion directly → 0.2.0
+
+# 2. Sync all public package.jsons to the release version
+pnpm version:sync 0.2.0
+
+# 3. Commit + tag on GitLab
+git add -A && git commit -m "release: v0.2.0"
+git tag v0.2.0 && git push --tags && git push
+
+# 4. Export to the GitHub mirror
+node scripts/export-public.mjs
+
+# 5. In the public repo: commit, tag the mirrored commit, push
+cd /path/to/github/axn-dev
+git add -A && git commit -m "release: v0.2.0"
+git tag v0.2.0 && git push --tags && git push
+
+# 6. Verify both sides agree
+gitversion /showvariable MajorMinorPatch   # → 0.2.0 on BOTH repos
+
+# 7. Publish (from either repo — versions are identical)
+pnpm publish:public
+----
+
+== Version bumps
+
+GitVersion reads `+semver:` tokens in commit messages on the mainline:
+
+- `+semver: feature|minor` → minor bump
+- `+semver: fix|patch` → patch bump
+- `+semver: breaking|major` → major bump
+
+Without tokens, merges on `develop` bump the minor `beta` series by
+default (`GitVersion.yml`).
+
+== Requirements
+
+[source,bash]
+----
+dotnet tool install -g GitVersion.Tool   # → `dotnet-gitversion`; or: brew install gitversion
+----
+
+`version-next.mjs` tries `gitversion` then `dotnet-gitversion`.
+
+NOTE: GitVersion 6.x requires `next-version` to include the tag prefix
+(`next-version: 'v0.1.0'`, not `'0.1.0'`) — a bare version string fails with
+"Failed to parse ... into a Semantic Version".
