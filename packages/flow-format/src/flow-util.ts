@@ -99,6 +99,10 @@ export interface ParsedFlow {
   description?: string;
   scenarios: ParsedScenario[];
   orchestrator?: string;
+  /** Execution engine: 'axn' (orchestrator/script engine, default) or 'pw'
+   * (Playwright Test runner). From <flow runner="pw"> or the file-level
+   * <flows runner="pw"> default; --runner / AXN_FLOW_RUNNER override it. */
+  runner?: string;
   models: ParsedModel[];
   env: Record<string, string>;
   toolMode?: string;
@@ -161,6 +165,16 @@ export interface FlowResult {
 export interface FlowReport {
   timestamp: string;
   flows: FlowResult[];
+}
+
+/** Normalize a runner name ('legacy' → 'axn'). Throws on unknown values. */
+export function normalizeRunnerName(value?: string | null): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value === "legacy") return "axn";
+  if (value !== "axn" && value !== "pw") {
+    throw new Error(`Unknown flow runner '${value}' — expected 'axn' or 'pw'`);
+  }
+  return value;
 }
 
 const flowXmlArrays = new Set([
@@ -571,6 +585,8 @@ export function loadFlowsFromFile(filePath: string): ParsedFlow[] {
 
   return flowArray.map((f: any, i: number) => {
     const flow = parseFlow(f);
+    // File-level default: <flows runner="pw"> applies to flows without their own runner=
+    flow.runner ??= normalizeRunnerName(parsed?.flows?.runner);
     const ordered = orderedDoc ? orderedStepsForFlow(orderedDoc, i) : null;
     if (ordered) {
       flow.steps = ordered;
@@ -745,6 +761,7 @@ export function parseFlow(raw: any): ParsedFlow {
     description: raw.description?.["#text"] || raw.description,
     scenarios,
     orchestrator: raw.orchestrator,
+    runner: normalizeRunnerName(raw.runner),
     models,
     env,
     toolMode,

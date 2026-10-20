@@ -221,3 +221,37 @@ describe("isEvidencePathAllowed", () => {
     expect(isEvidencePathAllowed("/repos/integration/../integration/flows/.reports/evidence/x/a.png", roots)).toBe(true);
   });
 });
+
+describe("runner attribute", () => {
+  it("parses <flow runner=\"pw\"> and the <flows> file-level default", () => {
+    const file = writeFlow(
+      "runner.xml",
+      `<?xml version="1.0"?>
+      <flows runner="pw">
+        <flow name="uses-default">
+          <steps><step src="a.ts"/></steps>
+        </flow>
+        <flow name="overrides" runner="axn">
+          <steps><step src="a.ts"/></steps>
+        </flow>
+      </flows>`
+    );
+    const [a, b] = loadFlowsFromFile(file);
+    expect(a.runner).toBe("pw");
+    expect(b.runner).toBe("axn");
+  });
+
+  it("normalizes legacy → axn and rejects unknown runners", () => {
+    const legacy = writeFlow(
+      "runner-legacy.xml",
+      `<flows><flow name="f" runner="legacy"><steps><step src="a.ts"/></steps></flow></flows>`
+    );
+    expect(loadFlowsFromFile(legacy)[0].runner).toBe("axn");
+
+    const bad = writeFlow(
+      "runner-bad.xml",
+      `<flows><flow name="f" runner="vitest"><steps><step src="a.ts"/></steps></flow></flows>`
+    );
+    expect(() => loadFlowsFromFile(bad)).toThrow(/Unknown flow runner 'vitest'/);
+  });
+});

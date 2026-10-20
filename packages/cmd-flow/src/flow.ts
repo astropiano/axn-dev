@@ -21,7 +21,7 @@ import {
   type FlowAdapterContext,
   type FlowAdapterStep,
 } from "@axn-dev/core";
-import { loadFlowsFromFile, discoverAllFlows, writeFlowReport, evidenceDirFor, type FlowInfo } from "@axn-dev/flow-format";
+import { loadFlowsFromFile, discoverAllFlows, writeFlowReport, evidenceDirFor, normalizeRunnerName, type FlowInfo } from "@axn-dev/flow-format";
 import type {
   ParsedFlow,
   ParsedScenario,
@@ -90,7 +90,18 @@ Options:
   --clean-start           Stop and remove volumes before starting the flow
   -y, --yes               Skip confirmation prompts (for --clean-start)
   --no-stop               Do not stop scenarios after the run
+  --runner <axn|pw>       Execution engine override: 'axn' (default) runs steps
+                          through the orchestrator/script engine; 'pw' runs the
+                          flow as a Playwright spec (test.step()s, traces,
+                          standard reporters). Overrides the flow's runner=
+                          attribute; AXN_FLOW_RUNNER does the same.
   -h, --help              Show this help
+
+Flow XML:
+  <flow runner="axn|pw">  selects the execution engine for that flow;
+                          <flows runner="pw"> sets the file-level default.
+                          Note: runner= on a <step> is display metadata only
+                          (serve UI) — it does not select an engine per step.
 
 Reusable step files:
   A .xml file containing exactly one step element (e.g. steps/login.xml
@@ -176,11 +187,8 @@ Examples:
         infra = args[++i];
         if (!infra) throw new Error("--infra requires a value");
       } else if (arg === "--runner") {
-        this.runnerMode = args[++i] ?? null;
-        if (this.runnerMode === "legacy") this.runnerMode = "axn"; // old name
-        if (this.runnerMode !== "pw" && this.runnerMode !== "axn") {
-          throw new Error("--runner must be 'axn' or 'pw'");
-        }
+        this.runnerMode = normalizeRunnerName(args[++i]) ?? null;
+        if (!this.runnerMode) throw new Error("--runner requires a value");
       } else if (arg === "--adapter") {
         const adapterArg = args[++i];
         if (!adapterArg) throw new Error("--adapter requires a value");
@@ -603,10 +611,12 @@ Examples:
 
       const flowDir = dirname(this._resolvedFilePath!);
 
-      // Experimental: Playwright Test runner — steps run as test.step()s in a
-      // PW worker (traces, retries, standard reporters) instead of the axn
-      // orchestrator engine. `--runner pw` or AXN_FLOW_RUNNER=pw.
-      if (this.runnerMode === "pw") {
+      // Execution engine: --runner / AXN_FLOW_RUNNER override the flow's own
+      // runner= attribute (<flow runner="pw"> or <flows runner="pw">);
+      // default is the axn orchestrator engine. 'pw' runs steps as
+      // test.step()s in a PW worker (traces, retries, standard reporters).
+      const runner = normalizeRunnerName(this.runnerMode) ?? flow.runner ?? "axn";
+      if (runner === "pw") {
         const adapterPathFor = (step: ParsedStep): string | null => {
           if (!step.adapter) return null;
           const registered = this.adapterRegistry?.resolve(step.adapter) ?? null;
