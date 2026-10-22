@@ -175,13 +175,13 @@ test(payload.name, async ({ page }, testInfo) => {
     const input = text ?? windowText(a);
     if (a.that === "screenshot") {
       const r = await evaluateScreenshotAssertion(a, { flowDir: payload.flowDir, env: payload.env, flowName: payload.name });
-      steps.push({ description: a.description, that: a.that, passed: r.passed, actual: r.detail });
+      steps.push({ description: a.description, that: a.that, value: a.value, passed: r.passed, actual: r.detail });
       expect(r.passed, r.detail ?? "screenshot assertion failed").toBe(true);
       return;
     }
     if (a.that === "llm") {
       const r = await evaluateLlmAssertion(a, input, payload.env);
-      steps.push({ description: a.description, that: a.that, passed: r.passed, actual: r.actual });
+      steps.push({ description: a.description, that: a.that, value: a.value, passed: r.passed, actual: r.actual });
       expect(r.passed, r.actual ?? "llm judge failed").toBe(true);
       return;
     }
@@ -189,16 +189,16 @@ test(payload.name, async ({ page }, testInfo) => {
       const r = await runTsScript(resolve(payload.flowDir, a.src ?? a.value), {
         ...payload.env, AXN_OUTPUT: input, AXN_ASSERT: JSON.stringify(a),
       }, payload.flowDir);
-      steps.push({ description: a.description, that: a.that, passed: r.exitCode === 0, actual: r.stdout.trim() || r.stderr.trim() });
+      steps.push({ description: a.description, that: a.that, value: a.value, passed: r.exitCode === 0, actual: r.stdout.trim() || r.stderr.trim() });
       expect(r.exitCode, r.stderr || r.stdout).toBe(0);
       return;
     }
     try {
       evalAssertion(a, text, ms);
-      steps.push({ description: a.description, that: a.that, passed: true, actual: a.that === "duration" ? `${ms}ms` : undefined });
+      steps.push({ description: a.description, that: a.that, value: a.value, passed: true, actual: a.that === "duration" ? `${ms}ms` : undefined });
     } catch (err) {
       steps.push({
-        description: a.description, that: a.that, passed: false,
+        description: a.description, that: a.that, value: a.value, passed: false,
         error: err instanceof Error ? err.message : String(err),
       });
       throw err;
