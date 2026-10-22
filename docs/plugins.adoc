@@ -93,7 +93,7 @@ Notes:
 | `scenarioTypes[].markers`| Filenames probed in a scenario dir that imply this type — enable detection without loading your module
 | `scenarioTypes[].entry`  | Optional driver module path, relative to package root (defaults to the package entry)
 | `flowAdapters[].name`    | Flow adapter name — used by `adapter="<name>"` and `<scenario adapter="...">`
-| `flowAdapters[].tags`    | Step tags this adapter serves (e.g. `usermessage`, or a custom tag the adapter owns). Adapters without tags only run via explicit `adapter="<name>"` on `<step>`
+| `flowAdapters[].tags`    | Step tags this adapter serves (e.g. `usermessage`, or a custom tag the adapter owns). Tags must not collide with the reserved flow vocabulary (engine elements like `step`/`extract`, structural elements like `env`/`scenario`, step-ref keywords like `file`/`action`) — reserved tags are dropped with a warning at registration. Adapters without tags only run via explicit `adapter="<name>"` on `<step>`
 | `flowAdapters[].extends` | Optional base adapter name — its resolved instance is passed to your module's factory
 | `flowAdapters[].wantsScenario` | `true` → the flow engine starts the scenario, probes readiness, and passes `ctx.baseUrl` before `run()`
 | `flowAdapters[].entry`   | Optional adapter module path, relative to package root (defaults to the package entry)

@@ -38,7 +38,7 @@ git add -A && git commit -m "release: v0.2.0"
 git tag v0.2.0 && git push --tags && git push
 
 # 4. Export to the GitHub mirror
-node scripts/export-public.mjs
+axn-dev repo-sync export
 
 # 5. In the public repo: commit, tag the mirrored commit, push
 cd /path/to/github/axn-dev
@@ -61,7 +61,7 @@ GitVersion reads `+semver:` tokens in commit messages on the mainline:
 - `+semver: breaking|major` → major bump
 
 Without tokens, merges on `develop` bump the minor `-dev.N` series by
-default (`GitVersion.yml`), matching `the internal versioning conventions`.
+default (`GitVersion.yml`), matching the internal versioning conventions.
 
 == Requirements
 

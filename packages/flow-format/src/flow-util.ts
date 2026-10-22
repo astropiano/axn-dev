@@ -1,8 +1,9 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { XMLParser } from "fast-xml-parser";
-import { getWorktreeInfo, getWorktreeInfoAsync, flowDirNames } from "@axn-dev/core";
+import { getWorktreeInfo, getWorktreeInfoAsync, flowDirNames, FLOW_RESERVED_STEP_NAMES } from "@axn-dev/core";
 import type { AxnDevConfig } from "@axn-dev/core";
+import { validateFlow } from "./flow-validation.js";
 
 export interface ParsedModel {
   provider: string;
@@ -136,6 +137,9 @@ export interface ParsedFlow {
    * (Playwright Test runner). From <flow runner="pw"> or the file-level
    * <flows runner="pw"> default; --runner / AXN_FLOW_RUNNER override it. */
   runner?: string;
+  /** Default step adapter (<flow adapter="x">) — applied to script steps
+   * lacking adapter= at parse time. */
+  adapter?: string;
   models: ParsedModel[];
   env: Record<string, string>;
   toolMode?: string;
@@ -417,6 +421,11 @@ function stepNodeToParsedStep(child: OrderedNode): ParsedStep | null {
   // through as step args (minus the adapter/selector keys).
   const tag = elementTag(child);
   if (!tag) return null;
+  if (FLOW_RESERVED_STEP_NAMES.has(tag)) {
+    throw new Error(
+      `<${tag}> is a reserved flow element — it cannot be used as a custom step tag inside <steps>`
+    );
+  }
   const text = nodeText(child, tag);
   const nested = nestedAsserts((child as Record<string, unknown>)[tag] as OrderedNode[]);
   const stepArgs: Record<string, string> = {};
@@ -562,9 +571,18 @@ function stepRefOf(step: ParsedStep): StepRef | null {
     if (step.src) {
       throw new Error(`<step file="${file}"> cannot be combined with src="${step.src}"`);
     }
+    if (action !== undefined) {
+      throw new Error(`<step file="${file}"> cannot be combined with action="${action}"`);
+    }
     return { kind: "file", value: String(file) };
   }
   if (action !== undefined && !step.adapter && !step.src) {
+    const refName = String(action).replace(/\.xml$/, "");
+    if (FLOW_RESERVED_STEP_NAMES.has(refName)) {
+      throw new Error(
+        `<step action="${action}"> — '${refName}' is a reserved flow keyword and cannot name a step file`
+      );
+    }
     return { kind: "name", value: String(action) };
   }
   return null;
@@ -724,7 +742,7 @@ export function loadFlowsFromFile(filePath: string): ParsedFlow[] {
 
   const flowDir = dirname(filePath);
 
-  return flowArray.map((f: any, i: number) => {
+  const flows = flowArray.map((f: any, i: number) => {
     const flow = parseFlow(f);
     // File-level default: <flows runner="pw"> applies to flows without their own runner=
     flow.runner ??= normalizeRunnerName(parsed?.flows?.runner);
@@ -739,8 +757,28 @@ export function loadFlowsFromFile(filePath: string): ParsedFlow[] {
     }
     const includeSpecs = collectStepIncludes(parsed, f, orderedDoc, i);
     flow.steps = expandStepRefs(flow.steps, flowDir, includeSpecs);
+    // <flow adapter="x"> — default step adapter: adapter-less script steps
+    // use it. Scenario adapters are unaffected — they govern <usermessage>
+    // routing and scenario lifecycle, not step dispatch.
+    if (flow.adapter) {
+      flow.steps = flow.steps.map((s) =>
+        s.type === "script" && !s.adapter && !stepRefOf(s)
+          ? { ...s, adapter: flow.adapter }
+          : s,
+      );
+    }
+    validateFlow(flow);
     return flow;
   });
+
+  const seenNames = new Set<string>();
+  for (const f of flows) {
+    if (seenNames.has(f.name)) {
+      throw new Error(`Duplicate <flow> name '${f.name}' in ${filePath}`);
+    }
+    seenNames.add(f.name);
+  }
+  return flows;
 }
 
 /**
@@ -819,9 +857,10 @@ export function parseFlow(raw: any): ParsedFlow {
   const envArray = rawEnv ? (Array.isArray(rawEnv) ? rawEnv : [rawEnv]) : [];
   const env: Record<string, string> = {};
   for (const v of envArray) {
-    if (v.name) {
-      env[v.name] = v.value ?? "";
+    if (!v.name) {
+      throw new Error(`<flow name="${name}">: <var> requires a 'name' attribute`);
     }
+    env[v.name] = v.value ?? "";
   }
 
   const rawSteps = raw.steps;
@@ -948,6 +987,7 @@ export function parseFlow(raw: any): ParsedFlow {
     scenarios,
     orchestrator: raw.orchestrator,
     runner: normalizeRunnerName(raw.runner),
+    adapter: raw.adapter,
     models,
     env,
     toolMode,
@@ -962,14 +1002,22 @@ export function parseFlow(raw: any): ParsedFlow {
 export function parseReadiness(raw: any): ParsedReadiness[] {
   if (!raw) return [];
   const arr = Array.isArray(raw) ? raw : [raw];
-  return arr.map((r: any) => ({
-    service: r.service,
-    path: r.path,
-    port: r.port,
-    method: r.method,
-    expected: r.expected,
-    timeout: r.timeout,
-  }));
+  return arr.map((r: any) => {
+    if (r.port !== undefined && isNaN(Number(r.port))) {
+      throw new Error(`<readiness> port must be a number (got '${r.port}')`);
+    }
+    if (r.timeout !== undefined && isNaN(Number(r.timeout))) {
+      throw new Error(`<readiness> timeout must be a number of ms (got '${r.timeout}')`);
+    }
+    return {
+      service: r.service,
+      path: r.path,
+      port: r.port,
+      method: r.method,
+      expected: r.expected,
+      timeout: r.timeout,
+    };
+  });
 }
 
 // ── Flow discovery (shared by `axn-dev flow` and `axn-dev serve`) ────────────

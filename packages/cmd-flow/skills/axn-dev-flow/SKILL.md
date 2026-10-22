@@ -63,7 +63,7 @@ description: Run XML-defined flow tests against scenarios or deployed devices wi
 
 ### Elements
 
-`<flow name="..." orchestrator="...">`:: A single test flow. `orchestrator` points to a TypeScript orchestrator script (see below).
+`<flow name="..." orchestrator="..." adapter="...">`:: A single test flow. `orchestrator` points to a TypeScript orchestrator script (see below). `adapter` is the *default step adapter*: `<step>`/`<script>` units without their own `adapter=` use it — e.g. `<flow adapter="axn-term">` lets a flow of adapter steps omit `adapter=` on every step. It does **not** affect `<usermessage>` (routed by the scenario's adapter) or custom tags (routed by the declaring adapter).
 
 `<scenarios>`:: One or more `<scenario>` elements to start and test against.
 
@@ -81,6 +81,8 @@ description: Run XML-defined flow tests against scenarios or deployed devices wi
 `<steps>`:: `<usermessage>` (served by any adapter claiming that tag), one or more `<step>`/`<script>` elements (tsAdapter or `adapter="..."`), custom plugin tags, plus `<assertions>`.
 
 `<step src="path/to/script.ts"/>` / `<script src="..."/>`:: (tsAdapter) a TypeScript/Playwright script, either via `src` (relative to the flow file) or inline text. Multiple steps require an `orchestrator` on the `<flow>` or `<scenario>`. The tag body can be used as a description when `src` is set, e.g. `<step src="steps/login.ts" myArgs="xyz">Login of user</step>`.
+
+**`<step>` vs `<script>`** — pure aliases (both parse to the same `script` unit; no adapter can tell them apart). Recommended convention by readability: `<step adapter="x" action="…"/>` for adapter/command calls — it reads like a pipeline step — and `<script>` only when the content literally is code (`<script src="…"/>` or an inline body).
 
 `<step adapter="keycloak" action="createUser" .../>`:: (keycloak plugin adapter) creates a Keycloak user and sets the password. Supported actions: `createUser`, `deleteUser`, `resetPassword`.
 
@@ -113,6 +115,13 @@ A step can live in its own `.xml` file (exactly one step element — `<step>`/`<
 - `action=` on a plain `<step>` is a step-file ref; combined with `adapter=` it stays an adapter argument. `file=` cannot be combined with `src`/`adapter`.
 - Extra attributes on the referencing step merge into the bound step's args (caller wins); `desc`/tag text override the description.
 - Step files may chain (`<step action="other"/>` inside); cycles are an error.
+- `file=` and `action=` cannot be combined on one `<step>`.
+
+### Reserved names
+
+Self-declared names must not reuse the engine's vocabulary — custom `<steps>` tags, `<step action="name">` refs and step-file basenames. Reserved: the step elements (`usermessage`, `step`, `script`, `assert`, `assertions`, `picture`, `video`, `repeat`, `extract`), structural elements (`flows`, `flow`, `steps`, `scenarios`, `scenario`, `setup`, `models`, `model`, `env`, `var`, `readiness`, `tags`, `tag`, `description`, `tool-mode`, `use-docker`) and the step-ref keywords (`file`, `action`, `include`, `src`). `<file .../>` in `<steps>` or `<step action="file">` fails at load time. Plugin adapters cannot claim these tags either (dropped with a warning; `usermessage` exempt).
+
+Flow files are validated at load: required attributes, known `that` assertion types (`contains`, `num_responses`, `exitCode`, `screenshot`, `llm`, `duration`, `script`) plus their per-type requirements, evidence `name`s, non-empty steps, unique flow names per file.
 
 ### Evidence capture
 
@@ -162,11 +171,39 @@ Plugin adapters:: Any installed plugin can contribute adapters — including cus
 
 ### Assertions
 
-Placement defines *what is under test*:
+Assertions judge **captured stdout** — step output, adapter responses, `<extract>` reads — accumulating in one buffer per flow. Placement decides *which slice* of that buffer an assert sees:
 
-- **Nested in a producing step** — `<step>`, `<usermessage>`, `<extract>`, custom tags — the assert judges *that step's own output* (and `that="duration"` judges its wall-clock ms). This is the preferred shape: the subject under test is explicit.
-- **Bare `<assert/>` between steps** — sugar for a one-element `<assertions>` block; evaluates output accumulated so far.
-- **`<assertions desc="chat answered">` group** — a *named report section*: `desc`/`description` labels all its asserts in reports and the serve view, and `fresh="true"` on the block scopes the whole group to output produced since the previous assert. No other semantics — bare asserts are equivalent otherwise.
+- **Nested in a producing step** (`<step>`, `<usermessage>`, `<extract>`, custom tags) — the assert judges *that step's own output only* (and `that="duration"` measures its wall-clock ms). The subject under test is explicit — the preferred shape.
+- **Bare `<assert/>` or `<assertions>` between steps** — sees **all output accumulated since the flow started** (or since the current `<repeat>` iteration started). Cumulative — *not* just the last step.
+- **`fresh="true"`** (on `<assert>` or the whole `<assertions>` group) — sees only output produced **since the previous assertions unit**. A `fresh` first assert behaves like a normal one (there is no previous unit yet).
+
+The window mechanic: after *every* assertions unit — a bare `<assert/>` counts as a one-element block — an internal cursor moves to the end of output at that moment. `fresh` asserts evaluate the slice since that cursor; non-fresh asserts ignore it entirely. Inside one `<assertions>` group, all asserts share the same window (the cursor moves only after the group completes).
+
+```text
+<step/> 1  <step/> 2  <step/> 3
+<assert/>                     → sees 1,2,3
+<step> 4 <assert/></step>     → sees 4 only (nested = step-scoped)
+<assert/>                     → sees 1,2,3,4  (cumulative)
+<step/> 5
+<assert fresh="true"/>        → sees 5 only  (since previous assertions unit)
+<step/> 6  <step/> 7
+<assertions>
+  <assert/>                   → sees 1..7 — NOT just 6,7
+</assertions>
+<assertions fresh="true">
+  <assert/>                   → sees 6,7 — windowed by the flag
+</assertions>
+<assert/>                     → sees 1..7
+```
+
+Rules of thumb: want "check what just happened" → `fresh="true"` or nest the assert in the step; want "did this ever appear in the run" → bare assert. Inside `<repeat>`, each iteration gets its own buffer start, so plain asserts there see only that iteration's output.
+
+**When to use `<assertions>`** — only two reasons, both optional:
+
+1. **`desc="…"`** — a named report group: the label shows on its asserts in reports and the serve view. Without it, each assert is a standalone line item.
+2. **`fresh="true"`** — apply the windowed scope to several asserts at once instead of repeating the flag on each.
+
+An `<assertions>` group with neither is just bare asserts with extra indentation — it does **not** create a sub-scope or narrow the window.
 
 ```xml
 <usermessage value="What time is it?">
@@ -175,7 +212,9 @@ Placement defines *what is under test*:
 </usermessage>
 <step src="steps/book.ts"><assert that="contains" value="confirmed"/></step>
 <extract selector=".chat .bubble:last-child"><assert that="contains" value="Berlin"/></extract>
-<assert that="contains" value="done" fresh="true"/>  <!-- only since previous assert -->
+<assertions fresh="true" desc="latest output only">
+  <assert that="contains" value="done"/>
+</assertions>
 ```
 
 `num_responses`:: Number of responses received (`1` for a single REST call, non-empty output for scripts).

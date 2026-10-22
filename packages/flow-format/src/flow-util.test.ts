@@ -409,3 +409,34 @@ describe("nested + bare asserts", () => {
     });
   });
 });
+
+describe("<flow adapter> — default step adapter", () => {
+  it("applies to adapter-less script steps, leaves others untouched", () => {
+    const file = writeFlow(
+      "flow-adapter.xml",
+      `<?xml version="1.0"?>
+      <flows>
+        <flow name="f" adapter="my-adapter">
+          <steps>
+            <step adapter="axn-term" action="a"/>
+            <step>console.log("b")</step>
+            <script src="x.ts"/>
+            <usermessage>hi</usermessage>
+            <my-tag action="c"/>
+          </steps>
+        </flow>
+      </flows>`,
+    );
+    const flow = loadFlowsFromFile(file)[0];
+    expect(flow.adapter).toBe("my-adapter");
+    const steps = flow.steps;
+    // explicit adapter kept
+    expect(steps[0].adapter).toBe("axn-term");
+    // adapter-less script step inherits
+    expect(steps[1].adapter).toBe("my-adapter");
+    expect(steps[2].adapter).toBe("my-adapter");
+    // usermessage + custom tags unaffected
+    expect(steps[3].adapter).toBeUndefined();
+    expect(steps[4].adapter).toBeUndefined();
+  });
+});

@@ -104,13 +104,70 @@ export interface FlowAdapterSpec {
   load(base?: FlowAdapter): Promise<FlowAdapter> | FlowAdapter;
 }
 
+// ── Reserved flow vocabulary ──────────────────────────────────────────────
+//
+// Custom step tags and step-file action names are self-declared: adapters
+// declare tags in their manifest, step files declare action names via their
+// file name. Neither may reuse a name the engine owns — the engine
+// interprets it before adapter dispatch or step-file binding ever sees it.
+
+/** Step elements the engine interprets inside <steps> — they can never
+ * serve as custom step tags or step-file names. `usermessage` is included:
+ * as an element it is always a message step, and adapters serve it in
+ * their manifests by design. */
+export const FLOW_ENGINE_STEP_TAGS: ReadonlySet<string> = new Set([
+  "usermessage", "step", "script", "assert", "assertions",
+  "picture", "video", "repeat", "extract",
+]);
+
+/** Structural elements — meaningful only in their own positions
+ * (<flow>, <scenarios>, <env>, …), never as a step tag or step-file name. */
+export const FLOW_STRUCTURAL_TAGS: ReadonlySet<string> = new Set([
+  "flows", "flow", "steps", "scenarios", "scenario", "setup", "models",
+  "model", "env", "var", "readiness", "tags", "tag", "description",
+  "tool-mode", "use-docker",
+]);
+
+/** Keywords of the reusable-step vocabulary (`file=`, `action=`, `include=`
+ * on <step>/<flows>/<flow>/<steps>) plus `src` for script paths. */
+export const FLOW_STEP_REF_KEYWORDS: ReadonlySet<string> = new Set([
+  "file", "action", "include", "src",
+]);
+
+/** All names a flow must not self-declare: custom <steps> tags and <step
+ * action="name"> / step-file basenames. */
+export const FLOW_RESERVED_STEP_NAMES: ReadonlySet<string> = new Set([
+  ...FLOW_ENGINE_STEP_TAGS,
+  ...FLOW_STRUCTURAL_TAGS,
+  ...FLOW_STEP_REF_KEYWORDS,
+]);
+
+/** Manifest tags a plugin adapter must not declare — the engine interprets
+ * them before tag dispatch could route a step. `usermessage` is exempt:
+ * serving it is how message adapters work. */
+export const FLOW_ADAPTER_TAG_BLOCKLIST: ReadonlySet<string> = new Set(
+  [...FLOW_RESERVED_STEP_NAMES].filter((t) => t !== "usermessage")
+);
+
 const specs = new Map<string, FlowAdapterSpec>();
 const instances = new Map<string, Promise<FlowAdapter>>();
 
-/** Register a flow adapter. Later registrations lose name conflicts. */
+/** Register a flow adapter. Later registrations lose name conflicts.
+ * Reserved tags (engine elements / step-ref keywords) are dropped with a
+ * warning — they could never be dispatched anyway. */
 export function registerFlowAdapter(spec: FlowAdapterSpec): void {
   if (specs.has(spec.name)) return;
-  specs.set(spec.name, spec);
+  const tags = spec.tags.filter((t) => {
+    if (FLOW_ADAPTER_TAG_BLOCKLIST.has(t)) {
+      console.warn(
+        `Warning: flow adapter '${spec.name}' declares reserved flow tag '${t}' — ` +
+          `the engine owns that element, so the tag is ignored`
+      );
+      return false;
+    }
+    return true;
+  });
+  specs.set(spec.name, { ...spec, tags });
 }
 
 export function hasFlowAdapter(name: string): boolean {

@@ -72,4 +72,16 @@ describe("flow adapter registry", () => {
   it("throws a helpful error for unknown adapters", async () => {
     await expect(flowAdapter("t-nope")).rejects.toThrow("Unknown flow adapter 't-nope'");
   });
+
+  it("drops reserved flow tags with a warning", () => {
+    registerFlowAdapter({ name: "t-reserved", tags: ["file", "step", "kc-tag"], load: () => fake("r") });
+    const spec = flowAdapterSpecs().find((s) => s.name === "t-reserved");
+    expect(spec?.tags).toEqual(["kc-tag"]);
+  });
+
+  it("keeps usermessage — message adapters legitimately serve it", () => {
+    registerFlowAdapter({ name: "t-msg2", tags: ["usermessage"], load: () => fake("m2") });
+    const spec = flowAdapterSpecs().find((s) => s.name === "t-msg2");
+    expect(spec?.tags).toEqual(["usermessage"]);
+  });
 });

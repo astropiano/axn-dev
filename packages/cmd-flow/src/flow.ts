@@ -131,7 +131,10 @@ Reusable step files:
                                   <flows>, <flow> or <steps>
   <step file="steps/login.xml"/>  explicit path relative to the flow file
   Ambiguous names fail with a hint to use file=. Extra attributes on the
-  referencing step merge into the bound step's args (caller wins).
+  referencing step merge into the bound step's args (caller wins). file= and
+  action= cannot be combined; reserved names (engine elements, file/action/
+  include/src) cannot be custom tags or step-file names — flows are
+  validated at load.
 
 Adapters decide how steps run:
   tsAdapter               Built-in: execute a TypeScript/Playwright script

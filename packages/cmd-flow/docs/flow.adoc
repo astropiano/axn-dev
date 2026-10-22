@@ -13,7 +13,36 @@ axn-dev flow -f flows/example.xml --clean-start --yes   # wipe data and run with
 
 The `--clean-start` flag stops the scenario(s), removes their named Docker volumes, and starts them fresh before the flow runs. It does not rebuild images. It is not compatible with `--infra`.
 
-A flow file describes one or more `<flow>` elements with scenarios, models, a user message, and assertions. The built-in `tsAdapter` runs TypeScript/Playwright scripts; all other adapters come from plugin packages — `http` (generic, bundled with `cmd-flow`), `keycloak` (`@axn-dev/adapter-keycloak`), or any adapter an installed plugin declares — or from script files resolved per step. Assertions: `num_responses`, `contains`, `exitCode` and `screenshot`. Reports are written to `flows/.reports/` next to the flow file.
+A flow file describes one or more `<flow>` elements with scenarios, models, a user message, and assertions. The built-in `tsAdapter` runs TypeScript/Playwright scripts; all other adapters come from plugin packages — `http` (generic, bundled with `cmd-flow`), `keycloak` (`@axn-dev/adapter-keycloak`), or any adapter an installed plugin declares — or from script files resolved per step. Assertions: `num_responses`, `contains`, `exitCode`, `duration`, `script`, `screenshot` and `llm`. Reports are written to `flows/.reports/` next to the flow file.
+
+=== Assertion scoping
+
+Assertions judge captured *stdout* — step output, adapter responses, `<extract>` reads — accumulating in one buffer per flow. Placement decides which slice of that buffer an assert sees:
+
+* *Nested in a producing step* (`<step>`, `<usermessage>`, `<extract>`, custom tags) — judges *that step's own output only*; `that="duration"` measures its wall-clock ms.
+* *Bare `<assert/>` or `<assertions>`* — sees *all* output accumulated since the flow started (or since the current `<repeat>` iteration started): cumulative, not just the last step.
+* `fresh="true"` (on `<assert>` or the whole `<assertions>` group) — sees only output produced *since the previous assertions unit*. A `fresh` first assert behaves like a normal one.
+
+After every assertions unit — a bare `<assert/>` counts as a one-element block — an internal cursor moves to the end of output; `fresh` asserts evaluate the slice since that cursor. All asserts inside one `<assertions>` group share the same window.
+
+Use `<assertions>` only for two things: `desc=`/`description` (a named report group — labels its asserts in reports and the serve view) or a shared `fresh="true"` for the whole group. With neither it changes nothing — it does *not* create a sub-scope.
+
+[source,text]
+----
+<step/> 1  <step/> 2  <step/> 3
+<assert/>                     → sees 1,2,3
+<step> 4 <assert/></step>     → sees 4 only (nested = step-scoped)
+<assert/>                     → sees 1,2,3,4  (cumulative)
+<step/> 5
+<assert fresh="true"/>        → sees 5 only
+<step/> 6  <step/> 7
+<assertions>
+  <assert/>                   → sees 1..7 — NOT just 6,7
+</assertions>
+<assertions fresh="true">
+  <assert/>                   → sees 6,7
+</assertions>
+----
 
 === Screenshot assertions
 
@@ -193,10 +222,54 @@ Rules:
   `adapter`.
 * `action=` is only a step-file reference on a plain `<step>`; with
   `adapter="..."` it stays an adapter argument (e.g. `action="createUser"`).
+* `file=` and `action=` cannot be combined.
 * Extra attributes on the referencing step merge into the bound step's args
   (caller wins); `desc`/`description` or tag text override the description.
 * Step files may reference further step files; circular references are an
   error.
+
+=== Reserved names
+
+The engine owns a fixed vocabulary. Self-declared names — custom step tags
+inside `<steps>` and the action names bound by `<step action="name">` / step
+file basenames — must not reuse it:
+
+* *Step elements*: `usermessage`, `step`, `script`, `assert`, `assertions`,
+  `picture`, `video`, `repeat`, `extract`
+* *Structural elements*: `flows`, `flow`, `steps`, `scenarios`, `scenario`,
+  `setup`, `models`, `model`, `env`, `var`, `readiness`, `tags`, `tag`,
+  `description`, `tool-mode`, `use-docker`
+* *Step-ref keywords*: `file`, `action`, `include`, `src`
+
+A `<file .../>` element inside `<steps>` therefore fails parsing — the engine
+would interpret the name before any adapter dispatch could see it. Likewise
+`<step action="file">` is rejected: rename the step file. Plugin adapters may
+not declare these tags in their `axn-dev.flowAdapters` manifest either —
+reserved tags are dropped with a warning at registration (`usermessage` is
+the exception: serving it is how message adapters work).
+
+=== Validation
+
+`axn-dev flow` validates a flow file at load time — including step files
+bound via `action=`/`file=` — and fails with a precise error instead of
+misbehaving mid-run. Beyond the reserved-name rules and the per-element
+requirements documented above (`<extract> selector`, `<repeat> num`, …), the
+checks are:
+
+* a `<flow>` needs `name` and at least one step; flow names must be unique
+  within a file
+* `<scenario>` needs `name` and `adapter`; `<model>` needs `provider` and
+  `name`; `<env><var>` needs `name`; `<readiness>` `port`/`timeout` must be
+  numeric
+* `<usermessage>` needs a message (`value=` or body text); a `<step>` needs
+  `src=`, inline text, an `action=`/`file=` reference, or `adapter=`
+* `<picture>`/`<video>` need `name`; `<video>`/`<repeat>` need child steps
+* `<assert>` needs a known `that` (`contains`, `num_responses`, `exitCode`,
+  `screenshot`, `llm`, `duration`, `script`), plus the attributes that type
+  uses: `value` for `contains`/`num_responses`/`exitCode` (integer for the
+  latter two), a reference path for `screenshot`, a rubric (`prompt`/`value`)
+  for `llm`, a bound (`min`/`max`/numeric `value`) for `duration`, a script
+  path for `script`
 
 === Evidence capture
 
