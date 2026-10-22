@@ -234,6 +234,51 @@ export function configSection<T>(config: AxnDevConfig, name: string): T | undefi
 }
 
 /**
+ * Directory names scanned inside each repo/scenario root for flows and
+ * scenarios — the `paths:` config section:
+ *
+ *   paths:
+ *     flows: qa/flows | [qa/flows, e2e/flows]
+ *     scenarios: qa/scenarios
+ *
+ * Precedence: $AXN_FLOW_DIRS / $AXN_SCENARIO_DIRS (comma-separated) >
+ * repo .axn-dev/config.yaml > ~/.axn-dev/config.yaml > default
+ * ("flows" / "scenarios"). Entries may be paths relative to a scanned
+ * root (including subpaths) or absolute — absolute entries are scanned
+ * as standalone directories.
+ */
+function splitDirList(v: unknown): string[] | null {
+  if (v === undefined || v === null) return null;
+  const items = (Array.isArray(v) ? v : String(v).split(","))
+    .map((s) => String(s).trim())
+    .filter(Boolean);
+  return items.length ? items : null;
+}
+
+function cfgDirNames(
+  config: { sections?: Record<string, unknown> } | null | undefined,
+  key: "flows" | "scenarios",
+): string[] | null {
+  const sect = config?.sections?.["paths"];
+  if (!sect || typeof sect !== "object" || Array.isArray(sect)) return null;
+  return splitDirList((sect as Record<string, unknown>)[key]);
+}
+
+/** Configured flow directory names (see {@link cfgDirNames} docs). */
+export function flowDirNames(
+  config?: { sections?: Record<string, unknown> } | null,
+): string[] {
+  return splitDirList(process.env.AXN_FLOW_DIRS) ?? cfgDirNames(config, "flows") ?? ["flows"];
+}
+
+/** Configured scenario directory names (see {@link cfgDirNames} docs). */
+export function scenarioDirNames(
+  config?: { sections?: Record<string, unknown> } | null,
+): string[] {
+  return splitDirList(process.env.AXN_SCENARIO_DIRS) ?? cfgDirNames(config, "scenarios") ?? ["scenarios"];
+}
+
+/**
  * Scalar sections whose value resolves to an existing directory are
  * treated as repo declarations: a command package owning such a section
  * (e.g. `infra:` owned by a plugin) contributes basename(path) to the

@@ -74,8 +74,18 @@ export interface AxnDevManifest {
   scenarioTypes?: PluginScenarioTypeSpec[];
   /** Flow adapters contributed by this package. */
   flowAdapters?: PluginFlowAdapterSpec[];
+  /** LLM judges (`that="llm"` evaluators) contributed by this package. */
+  judges?: PluginJudgeSpec[];
   /** Device-env resolvers contributed by this package. */
   deviceEnvResolvers?: PluginDeviceEnvSpec[];
+}
+
+/** A flow judge contributed by a plugin package. The judge module (see
+ * `entry`, default: the plugin entry) exports `judge` or a default
+ * `FlowJudge` function. Selected via `judge="name"` or `judge="name/<arg>"`. */
+export interface PluginJudgeSpec {
+  name: string;
+  entry?: string;
 }
 
 export interface PluginDeviceEnvSpec {
@@ -154,6 +164,7 @@ export function discoverPlugins(extraRoots: string[] = []): PluginPackage[] {
         !manifest?.commands?.length &&
         !manifest?.scenarioTypes?.length &&
         !manifest?.flowAdapters?.length &&
+        !manifest?.judges?.length &&
         !manifest?.deviceEnvResolvers?.length &&
         // skills-only plugins: manifest with an existing skills dir
         !(manifest && existsSync(join(dir, manifest.skills ?? "skills")))
@@ -308,6 +319,25 @@ export function pluginFlowAdapters(pkg: PluginPackage): import("./flow-adapter.j
         );
       }
       return adapter;
+    },
+  }));
+}
+
+/** Flow-judge specs contributed by a plugin package — names are known
+ * statically; the judge module is imported only when judge="name" is used. */
+export function pluginFlowJudges(pkg: PluginPackage): import("./flow-judge.js").FlowJudgeSpec[] {
+  return (pkg.manifest.judges ?? []).map((spec) => ({
+    name: spec.name,
+    load: async () => {
+      const entry = spec.entry ? resolve(pkg.dir, spec.entry) : pluginEntry(pkg);
+      const mod = await import(pathToFileURL(entry).href);
+      const judge = mod.judges?.[spec.name] ?? mod.judge ?? mod.default;
+      if (typeof judge !== "function") {
+        throw new Error(
+          `Plugin '${pkg.name}' does not export a FlowJudge function for '${spec.name}'`,
+        );
+      }
+      return judge as import("./flow-judge.js").FlowJudge;
     },
   }));
 }

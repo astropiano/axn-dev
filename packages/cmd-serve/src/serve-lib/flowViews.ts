@@ -324,6 +324,8 @@ function stepKindLabel(step: ParsedStep): string {
   if (step.type === "assertions") return "verify";
   if (step.type === "picture") return "picture";
   if (step.type === "video") return "video";
+  if (step.type === "repeat") return "repeat";
+  if (step.type === "extract") return "extract";
   const runner = step.runner ?? "";
   const lang = step.lang ?? "";
   const isTs = lang === "ts" || lang === "typescript" || runner === "tsx" || (step.src?.endsWith(".ts") ?? false) || (!step.src && !!step.value);
@@ -345,7 +347,7 @@ function renderStepCard(step: ParsedStep, index: number): string {
   const value = step.value ? `<pre class="step-code">${escapeHtml(step.value)}</pre>` : "";
   const runner = step.runner ? `<span class="menu-meta">runner: ${escapeHtml(step.runner)}</span>` : "";
   const lang = step.lang ? `<span class="menu-meta">lang: ${escapeHtml(step.lang)}</span>` : "";
-  const asserts = step.type === "assertions" && step.assertions?.length
+  const asserts = step.assertions?.length
     ? `<ul class="step-asserts">${step.assertions.map((a) =>
         `<li><code>${escapeHtml(a.that)}</code> = <code>${escapeHtml(a.value)}</code></li>`
       ).join("\n")}</ul>`
@@ -369,6 +371,16 @@ function renderStepCard(step: ParsedStep, index: number): string {
     ? `<div class="evidence-meta">${step.name ? `<code>${escapeHtml(step.name)}</code>` : ""}<span class="menu-meta">records the enclosed steps</span></div>${videoChildren}`
     : "";
 
+  const repeatChildren = step.type === "repeat" && step.children?.length
+    ? `<ul class="step-asserts video-children">${step.children.map((c) =>
+        `<li>${stepKindBadge(c)} ${c.src ? `<code>${escapeHtml(c.src)}</code> ` : ""}${c.description ? escapeHtml(c.description) : (c.value ? `<code>${escapeHtml(c.value)}</code>` : "")}</li>`
+      ).join("\n")}</ul>`
+    : "";
+
+  const repeatMeta = step.type === "repeat"
+    ? `<div class="evidence-meta"><span class="menu-meta">runs ${step.num ?? "?"}× — block passes at ≥${Math.round((step.success ?? 1) * 100)}% success</span></div>${repeatChildren}`
+    : "";
+
   return `
     <div class="step-card">
       <div class="step-head">
@@ -383,6 +395,7 @@ function renderStepCard(step: ParsedStep, index: number): string {
       ${asserts}
       ${pictureMeta}
       ${videoMeta}
+      ${repeatMeta}
     </div>
   `;
 }
@@ -660,20 +673,26 @@ export function flowReportHtml(
       return `<button type="button" class="evidence-thumb" data-evidence-src="${url}" data-evidence-kind="${e.kind}" data-evidence-name="${name}" title="${name}">${inner}</button>`;
     };
 
-    const assertionRows = entry.assertions.map((a) => `
+    const assertionRows = entry.assertions.map((a) => {
+      const repeatDetail = a.repeat
+        ? `<div class="assertion-notes">repeat: ${a.repeat.succeeded}/${a.repeat.runs} ok (needed ${a.repeat.needed})${a.repeat.failures.length
+            ? `<ul>${a.repeat.failures.map((f) => `<li><code>${escapeHtml(f)}</code></li>`).join("")}</ul>` : ""}</div>`
+        : "";
+      return `
       <tr>
         <td>
           ${a.description ? `<div class="assertion-desc">${escapeHtml(a.description)}</div>` : ""}
           <code>${escapeHtml(a.that)}</code>
         </td>
         <td><code>${escapeHtml(a.value)}</code></td>
-        <td>${a.actual !== undefined ? `<code>${escapeHtml(a.actual)}</code>` : "—"}</td>
+        <td>${a.actual !== undefined ? `<code>${escapeHtml(a.actual)}</code>` : "—"}${repeatDetail}</td>
         <td>${a.notes ? `<div class="assertion-notes">${escapeHtml(a.notes)}</div>` : "—"}</td>
         <td>${a.passed
           ? `<span class="status-pill running">Pass</span>`
           : `<span class="status-pill failed">Fail</span>`}</td>
       </tr>
-    `).join("\n");
+    `;
+    }).join("\n");
 
     const manualStepsRows = (entry.manualSteps ?? []).map((s) => {
       const thumbs = (evidenceByStep.get(s.stepIndex) ?? []).map(evidenceThumb).join("");

@@ -242,4 +242,19 @@ describe("step ref errors", () => {
     expect(flow.steps[0].src).toBe("steps/ft-login.ts");
     expect(flow.steps[0].args).toEqual({ realm: "dev", user: "mom" });
   });
+
+  it("resolves refs inside <video> segments", () => {
+    write("flows/steps/login.xml", `<step src="ft-login.ts"/>`);
+    const [flow] = loadFlowsFromFile(
+      flowFile(`      <video name="rec">
+        <step action="login" user="mom"/>
+        <picture name="after"/>
+      </video>`)
+    );
+    const video = flow.steps[0];
+    expect(video.type).toBe("video");
+    expect(video.children?.[0].src).toBe("steps/ft-login.ts");
+    expect(video.children?.[0].args).toEqual({ user: "mom" });
+    expect(video.children?.[1].type).toBe("picture");
+  });
 });

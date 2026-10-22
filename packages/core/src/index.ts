@@ -20,6 +20,7 @@ export * from "./util/ports.js";
 export * from "./util/worktree.js";
 export * from "./driver.js";
 export * from "./flow-adapter.js";
+export * from "./flow-judge.js";
 export * from "./device-env.js";
 export * from "./util/dev-servers.js";
 export * from "./util/git-exec.js";

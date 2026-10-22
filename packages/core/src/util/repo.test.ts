@@ -101,3 +101,22 @@ describe("scenario roots layout", () => {
     expect(scenarios.filter((s) => scenarioMatches(s, "mock"))).toHaveLength(2);
   });
 });
+
+describe("configured dirs (paths: section / env)", () => {
+  it("scenarioDirNames/flowDirNames: env > config > default", async () => {
+    const { scenarioDirNames, flowDirNames } = await import("./config.js");
+    expect(flowDirNames()).toEqual(["flows"]);
+    expect(scenarioDirNames()).toEqual(["scenarios"]);
+    expect(flowDirNames({ sections: { paths: { flows: "qa/flows" } } })).toEqual(["qa/flows"]);
+    expect(flowDirNames({ sections: { paths: { flows: ["qa/flows", "e2e/flows"] } } }))
+      .toEqual(["qa/flows", "e2e/flows"]);
+    expect(scenarioDirNames({ sections: { paths: { scenarios: "qa/scenarios" } } }))
+      .toEqual(["qa/scenarios"]);
+    // env wins
+    const old = process.env.AXN_FLOW_DIRS;
+    process.env.AXN_FLOW_DIRS = "x/flows, /abs/flows";
+    expect(flowDirNames({ sections: { paths: { flows: "qa/flows" } } }))
+      .toEqual(["x/flows", "/abs/flows"]);
+    if (old === undefined) delete process.env.AXN_FLOW_DIRS; else process.env.AXN_FLOW_DIRS = old;
+  });
+});

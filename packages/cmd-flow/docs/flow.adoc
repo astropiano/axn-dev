@@ -44,6 +44,82 @@ Attributes:
 
 On failure, the actual capture and a highlighted diff image (red = real diff, yellow = antialiasing) are written to `flows/.reports/screenshots/`. Run with `AXN_FLOW_UPDATE_SCREENSHOTS=1` to create or refresh a reference. Requires `playwright-core` and a Chromium build (`npx playwright install chromium`).
 
+=== LLM-judged assertions
+
+`<assert that="llm">` hands the captured output to a *judge* — an LLM or a binary judge service — and passes when the judge's verdict is positive. The rubric comes from `prompt` (or `value`, or the tag body); `judge` selects the evaluator, falling back to `$AXN_JUDGE`. No dedicated eval infrastructure is required — a local Ollama model or any OpenAI-compatible endpoint works:
+
+`judge="ollama/<model>"`:: Local Ollama (default `http://localhost:11434`, override with `OLLAMA_BASE_URL`) — e.g. `ollama/llama3.1`. Zero setup beyond `ollama pull`.
+`judge="openai/<model>"`:: OpenAI API — needs `OPENAI_API_KEY`; `OPENAI_BASE_URL` retargets to *any* OpenAI-compatible endpoint (proxies, gateways, self-hosted vLLM, …).
+`judge="claude[/model]"`, `judge="gemini[/model]"`, `judge="codex[/model]"`, `judge="devin[/model]"`:: A local agent CLI in one-shot mode — spawns `claude -p`, `gemini -p`, `codex exec`, or `devin -p` with the rubric and output as the prompt and scans stdout for a PASS/FAIL verdict. The `/model` suffix adds the CLI's model flag (`--model` for claude/devin, `-m` for gemini/codex). Useful when no inference endpoint is around but an agent CLI is installed.
+`judge="http(s)://…"`:: A binary judge service POSTed `{"prompt": <rubric>, "response": <output>}` that replies `{pass|passed|verdict|result|ok|success: true|false}`, a bare JSON boolean, or text containing PASS/FAIL.
+`judge="<plugin-name>[/<arg>]"`:: A judge contributed by an installed plugin via `axn-dev.judges` — see `docs/plugins.adoc` ("Contributing a flow judge").
+
+`AXN_JUDGE_TIMEOUT_MS` overrides the 60s judge timeout.
+
+[source,xml]
+----
+<flow name="chat-eval">
+  <scenarios>
+    <scenario name="app-dev" service="app-server" adapter="http"/>
+  </scenarios>
+  <setup>
+    <models>
+      <model provider="ollama" name="llama3.1:latest"/>
+    </models>
+  </setup>
+  <steps>
+    <usermessage value="What time is it in Berlin?">
+      <assert that="llm" judge="ollama/qwen2.5:14b"
+              prompt="The reply states a concrete time for Berlin"/>
+      <assert that="duration" max="5000"/>
+    </usermessage>
+  </steps>
+</flow>
+----
+
+Note the two distinct models: `<model>` is the model *under test* (sent by the
+`http` adapter to the chat endpoint); `judge="ollama/qwen2.5:14b"` is the
+*evaluator* — ideally a different, stronger model than the one being tested.
+
+For flaky-but-generally-good behavior — the typical LLM-evaluation case — wrap the probe in `<repeat>` and require a pass *rate*:
+
+[source,xml]
+----
+<steps>
+  <repeat num="10" success="0.8">
+    <usermessage value="What time is it?"/>
+    <assertions>
+      <assert that="llm" prompt="states a concrete time" judge="ollama/llama3.1"/>
+    </assertions>
+  </repeat>
+</steps>
+----
+
+`success` accepts a count, fraction (`"0.8"`), or percent (`"80%"`). The block reports `repeat: {runs, succeeded, needed, failures[]}` detail in the JSON report; each iteration's assertions see only that iteration's output.
+
+In browser flows, `<extract>` pulls a DOM element into the output stream so the judge sees exactly the rendered answer rather than raw responses:
+
+[source,xml]
+----
+<steps>
+  <step src="steps/ask-question.ts"/>
+  <extract selector=".chat-history .bubble:last-child"/>
+  <assertions>
+    <assert that="llm" prompt="the reply mentions Berlin" judge="ollama/qwen2.5:14b"/>
+  </assertions>
+</steps>
+----
+
+==== Testing the harness without an LLM
+
+The `http(s)://` judge form makes the whole pipeline runnable offline — point `AXN_JUDGE` at a stub that returns a canned verdict:
+
+[source,bash]
+----
+node -e 'require("http").createServer((q,s)=>{let b="";q.on("data",d=>b+=d);q.on("end",()=>{s.end(JSON.stringify({pass:true}))})}).listen(8788)' &
+AXN_JUDGE=http://127.0.0.1:8788 axn-dev flow my-eval.xml
+----
+
 === Flow tags
 
 Flows can be tagged for grouping and filtering in `axn-dev serve`:
@@ -175,8 +251,10 @@ the report shows them next to the step they belong to.
 An orchestrator module exports `start(baseUrl, env)`, `run(steps)` and
 `stop()`. For `<video>` support it additionally implements:
 
-* `videoStart(name: string, dir?: string)` — begin recording (e.g. swap in a
-  `recordVideo` browser context, preserving storage state and current URL).
+* `videoStart(name: string, dir?: string)` — begin recording. Prefer recording the live page in
+  place (Playwright `page.screencast.start({ path })`) over swapping in a `recordVideo` browser
+  context: a swap reloads the page, so state such as an open dialog does not carry across
+  `</video>` and a `<picture>` right after it captures a page still loading.
 * `videoStop(name: string)` — stop recording, finalize the artifact in `dir`,
   and return its absolute path (or `void`).
 

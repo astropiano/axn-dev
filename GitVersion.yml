@@ -16,6 +16,6 @@ minor-version-bump-message: '\+semver:\s?(feature|minor|feat)'
 patch-version-bump-message: '\+semver:\s?(fix|patch)'
 branches:
   develop:
-    label: beta
+    label: dev
   main:
     label: ''

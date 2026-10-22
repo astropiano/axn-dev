@@ -60,8 +60,8 @@ GitVersion reads `+semver:` tokens in commit messages on the mainline:
 - `+semver: fix|patch` → patch bump
 - `+semver: breaking|major` → major bump
 
-Without tokens, merges on `develop` bump the minor `beta` series by
-default (`GitVersion.yml`).
+Without tokens, merges on `develop` bump the minor `-dev.N` series by
+default (`GitVersion.yml`), matching `the internal versioning conventions`.
 
 == Requirements
 

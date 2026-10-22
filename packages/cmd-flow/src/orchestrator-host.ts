@@ -7,7 +7,7 @@ interface Orchestrator {
   start(baseUrl: string, env: Record<string, string>): Promise<void>;
   run(steps: unknown[]): Promise<{ exitCode: number; stdout: string; stderr: string }>;
   stop(): Promise<void>;
-  /** Optional: begin recording a video segment (e.g. swap in a recording browser context). */
+  /** Optional: begin recording a video segment — ideally in place (page.screencast), not by swapping contexts. */
   videoStart?(name: string, dir?: string): Promise<void>;
   /** Optional: stop recording and return the artifact path. */
   videoStop?(name: string): Promise<string | void>;

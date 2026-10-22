@@ -255,3 +255,157 @@ describe("runner attribute", () => {
     expect(() => loadFlowsFromFile(bad)).toThrow(/Unknown flow runner 'vitest'/);
   });
 });
+
+describe("<repeat> blocks", () => {
+  it("parses num/success and ordered children", () => {
+    const file = writeFlow(
+      "repeat.xml",
+      `<flows><flow name="flaky">
+        <steps>
+          <repeat num="10" success="0.8">
+            <step src="flaky.ts">flaky bit</step>
+            <usermessage>hi</usermessage>
+            <assertions><assert that="contains" value="ok"/></assertions>
+          </repeat>
+          <assertions><assert that="exitCode" value="0"/></assertions>
+        </steps>
+      </flow></flows>`
+    );
+    const [flow] = loadFlowsFromFile(file);
+    expect(flow.steps.map((s) => s.type)).toEqual(["repeat", "assertions"]);
+    const rep = flow.steps[0];
+    expect(rep.num).toBe(10);
+    expect(rep.success).toBeCloseTo(0.8);
+    expect(rep.children?.map((c) => c.type)).toEqual(["script", "message", "assertions"]);
+  });
+
+  it("accepts percent success and defaults success to 1", () => {
+    const file = writeFlow(
+      "repeat-pct.xml",
+      `<flows><flow name="f">
+        <steps>
+          <repeat num="4" success="80%"><assertions/></repeat>
+          <repeat num="3"><assertions/></repeat>
+        </steps>
+      </flow></flows>`
+    );
+    const [flow] = loadFlowsFromFile(file);
+    expect(flow.steps[0].success).toBeCloseTo(0.8);
+    expect(flow.steps[1].success).toBe(1);
+  });
+
+  it("rejects a missing/invalid num and out-of-range success", () => {
+    for (const [name, attrs, re] of [
+      ["r-nonum", "", /positive integer 'num'/],
+      ["r-zeronum", 'num="0"', /positive integer 'num'/],
+      ["r-badsucc", 'num="3" success="abc"', /must be a rate/],
+      ["r-succ0", 'num="3" success="0"', /out of range/],
+      ["r-succ200", 'num="3" success="200"', /out of range/],
+    ] as const) {
+      const file = writeFlow(
+        `${name}.xml`,
+        `<flows><flow name="f"><steps><repeat ${attrs}><assertions/></repeat></steps></flow></flows>`
+      );
+      expect(() => loadFlowsFromFile(file), name).toThrow(re);
+    }
+  });
+
+  it("expands step-file refs inside <repeat>", () => {
+    mkdirSync(join(TMP, "steps"), { recursive: true });
+    writeFileSync(join(TMP, "steps", "login.xml"), `<step src="ft-login.ts"/>`);
+    const file = writeFlow(
+      "repeat-ref.xml",
+      `<flows><flow name="f"><steps>
+        <repeat num="2"><step action="login"/></repeat>
+      </steps></flow></flows>`
+    );
+    const [flow] = loadFlowsFromFile(file);
+    expect(flow.steps[0].children?.[0].src).toBe("steps/ft-login.ts");
+  });
+});
+
+describe('that="llm" assertion attrs', () => {
+  it("parses prompt and judge attributes", () => {
+    const file = writeFlow(
+      "llm.xml",
+      `<flows><flow name="f"><steps>
+        <assertions>
+          <assert that="llm" prompt="states a concrete time" judge="ollama/llama3.1"/>
+          <assert that="llm" value="mentions Berlin" judge="https://jev.example/eval"/>
+        </assertions>
+      </steps></flow></flows>`
+    );
+    const [flow] = loadFlowsFromFile(file);
+    const [a1, a2] = flow.steps[0].assertions ?? [];
+    expect(a1).toMatchObject({ that: "llm", prompt: "states a concrete time", judge: "ollama/llama3.1" });
+    expect(a2).toMatchObject({ that: "llm", value: "mentions Berlin", judge: "https://jev.example/eval" });
+  });
+});
+
+describe("<extract> DOM step", () => {
+  it("parses selector/attr/url and keeps order", () => {
+    const file = writeFlow(
+      "extract.xml",
+      `<flows><flow name="f">
+        <steps>
+          <step src="open.ts"/>
+          <extract selector=".chat .bubble:last-child"/>
+          <extract selector="#count" attr="value" url="\${BASE_URL}/app"/>
+          <assertions><assert that="contains" value="hi"/></assertions>
+        </steps>
+      </flow></flows>`
+    );
+    const [flow] = loadFlowsFromFile(file);
+    expect(flow.steps.map((s) => s.type)).toEqual(["script", "extract", "extract", "assertions"]);
+    expect(flow.steps[1]).toMatchObject({ selector: ".chat .bubble:last-child" });
+    expect(flow.steps[2]).toMatchObject({ selector: "#count", attr: "value", url: "${BASE_URL}/app" });
+  });
+
+  it("requires selector", () => {
+    const file = writeFlow(
+      "extract-nosel.xml",
+      `<flows><flow name="f"><steps><extract attr="text"/></steps></flow></flows>`
+    );
+    expect(() => loadFlowsFromFile(file)).toThrow(/requires a 'selector'/);
+  });
+});
+
+describe("nested + bare asserts", () => {
+  it("collects <assert>/<assertions> children on producing steps", () => {
+    const file = writeFlow(
+      "nested.xml",
+      `<flows><flow name="f">
+        <steps>
+          <usermessage>hi<assert that="contains" value="ok"/></usermessage>
+          <extract selector=".msg">
+            <assert that="llm" judge="ollama/x">rubric text</assert>
+          </extract>
+          <step src="s.ts">
+            <assertions fresh="true"><assert that="duration" max="2000"/></assertions>
+          </step>
+        </steps>
+      </flow></flows>`
+    );
+    const [flow] = loadFlowsFromFile(file);
+    expect(flow.steps[0].assertions).toHaveLength(1);
+    expect(flow.steps[1].assertions?.[0]).toMatchObject({ that: "llm", judge: "ollama/x", description: "rubric text" });
+    expect(flow.steps[2].assertions?.[0]).toMatchObject({ that: "duration", max: 2000, fresh: true });
+  });
+
+  it("parses a bare <assert> as a one-assertion block", () => {
+    const file = writeFlow(
+      "bare.xml",
+      `<flows><flow name="f">
+        <steps>
+          <step src="a.ts"/>
+          <assert that="contains" value="done" fresh="true"/>
+        </steps>
+      </flow></flows>`
+    );
+    const [flow] = loadFlowsFromFile(file);
+    expect(flow.steps[1]).toMatchObject({
+      type: "assertions",
+      assertions: [{ that: "contains", value: "done", fresh: true }],
+    });
+  });
+});

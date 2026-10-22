@@ -4,7 +4,7 @@ import { platform } from "node:os";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { parseBody } from "./utils.js";
-import { isEvidencePathAllowed, isFlowFileAllowed, isReportPathAllowed, flowRoots, flowRootsAsync } from "../flows.js";
+import { isEvidencePathAllowed, isFlowFileAllowed, isReportPathAllowed, flowRoots, flowRootsAsync, flowDirNames } from "../flows.js";
 import type { ServeContext } from "../types.js";
 
 /**
@@ -17,7 +17,7 @@ export async function handleStartFlow(ctx: ServeContext, req: IncomingMessage, r
   const name = typeof body.name === "string" && body.name ? body.name : undefined;
 
   const roots = await flowRootsAsync(ctx.discovery.getConfig());
-  if (!file || !isFlowFileAllowed(file, roots)) {
+  if (!file || !isFlowFileAllowed(file, roots, flowDirNames(ctx.discovery.getConfig()))) {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Unknown flow file" }));
     return;
@@ -58,7 +58,7 @@ const evidenceMimeTypes: Record<string, string> = {
 export function handleFlowEvidence(ctx: ServeContext, url: URL, res: ServerResponse): void {
   const file = url.searchParams.get("path") ?? "";
   const roots = flowRoots(ctx.discovery.getConfig());
-  if (!file || !isEvidencePathAllowed(file, roots)) {
+  if (!file || !isEvidencePathAllowed(file, roots, flowDirNames(ctx.discovery.getConfig()))) {
     res.writeHead(403, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Evidence path is not allowed" }));
     return;
@@ -80,7 +80,7 @@ export async function handleOpenReportFile(ctx: ServeContext, req: IncomingMessa
   const file = typeof body.file === "string" ? body.file : "";
 
   const roots = await flowRootsAsync(ctx.discovery.getConfig());
-  if (!file || !isReportPathAllowed(file, roots)) {
+  if (!file || !isReportPathAllowed(file, roots, flowDirNames(ctx.discovery.getConfig()))) {
     res.writeHead(403, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Report path is not allowed" }));
     return;

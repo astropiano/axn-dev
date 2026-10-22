@@ -19,6 +19,7 @@ export {
   isFlowFileAllowed,
   isEvidencePathAllowed,
 } from "@axn-dev/flow-format";
+export { flowDirNames } from "@axn-dev/core";
 export type {
   FlowInfo,
   FlowReport,

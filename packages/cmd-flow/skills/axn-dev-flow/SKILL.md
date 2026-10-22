@@ -141,7 +141,7 @@ An orchestrator is a TypeScript module (run via `tsx`) whose default export has 
 
 For `<video>` support the orchestrator additionally implements:
 
-- `videoStart(name: string, dir?: string)` — begin recording (e.g. swap in a `recordVideo` browser context, preserving storage state and the current URL).
+- `videoStart(name: string, dir?: string)` — begin recording. Prefer `page.screencast.start({ path })`, which records the live page in place; swapping in a `recordVideo` context reloads the page, so state (an open dialog) is lost across `</video>` and a `<picture>` right after it captures a loading page.
 - `videoStop(name: string)` — stop recording, finalize the artifact in `dir`, and return its absolute path (or `void`).
 
 The host splits each `run()` batch at video boundaries and calls the hooks between segments, so `run()` itself never sees markers. If a step inside a video fails, still-open recordings are finalized best-effort before the error propagates. Orchestrators without the hooks fail with a clear error when a `<video>` step runs.
@@ -162,14 +162,76 @@ Plugin adapters:: Any installed plugin can contribute adapters — including cus
 
 ### Assertions
 
+Placement defines *what is under test*:
+
+- **Nested in a producing step** — `<step>`, `<usermessage>`, `<extract>`, custom tags — the assert judges *that step's own output* (and `that="duration"` judges its wall-clock ms). This is the preferred shape: the subject under test is explicit.
+- **Bare `<assert/>` between steps** — sugar for a one-element `<assertions>` block; evaluates output accumulated so far.
+- **`<assertions desc="chat answered">` group** — a *named report section*: `desc`/`description` labels all its asserts in reports and the serve view, and `fresh="true"` on the block scopes the whole group to output produced since the previous assert. No other semantics — bare asserts are equivalent otherwise.
+
+```xml
+<usermessage value="What time is it?">
+  <assert that="llm" judge="ollama/qwen2.5:14b">The reply states a concrete time</assert>
+  <assert that="duration" max="3000"/>
+</usermessage>
+<step src="steps/book.ts"><assert that="contains" value="confirmed"/></step>
+<extract selector=".chat .bubble:last-child"><assert that="contains" value="Berlin"/></extract>
+<assert that="contains" value="done" fresh="true"/>  <!-- only since previous assert -->
+```
+
 `num_responses`:: Number of responses received (`1` for a single REST call, non-empty output for scripts).
 `contains`:: A string that must appear (case-insensitive) in the response/stdout.
 `exitCode`:: (tsAdapter) the process exit code must equal `value`.
+`duration`:: Step wall-clock time in ms — `min`/`max` bounds, or numeric `value` as shorthand max. Needs a producing-step context (nested asserts).
+`script`:: A ts/js assertion script (`src` or `value`), run via tsx: gets the output under test as `$AXN_OUTPUT`, the assert JSON as `$AXN_ASSERT`; exit 0 = pass, stdout becomes the report detail.
 `screenshot`:: Visual regression: captures `url` (default `BASE_URL`) with headless Chromium and compares it against the reference PNG at `value` (relative to the flow file). Antialiasing is tolerated; layout/shape changes fail. Attributes: `selector` (element capture — cropped to the element, so position changes are invisible; select a *container* element or omit it for a whole-page capture to catch moves), `fullPage`, `maxDiff` (fraction of differing pixels, default 0.01), `threshold` (per-pixel color, default 0.1), `viewport` ("WxH", default 1280x800), `wait` (ms or CSS selector). Diffs land in `flows/.reports/screenshots/`; `AXN_FLOW_UPDATE_SCREENSHOTS=1` rewrites the reference. Requires `playwright-core` and a Chromium browser (`npx playwright install chromium`).
 
 ```xml
 <assert that="screenshot" value="refs/button.png" selector="#buy"
         url="${BASE_URL}/shop" maxDiff="0.02"/>
+```
+
+`llm`:: Judges the captured output with an LLM, a local agent CLI, a binary judge service, or a plugin-registered judge. Rubric comes from `prompt` (or `value`); `judge` selects the evaluator: `ollama/<model>` (`OLLAMA_BASE_URL`), `openai/<model>` (`OPENAI_API_KEY`, `OPENAI_BASE_URL`), a local agent CLI in one-shot mode (`claude[/model]` → `claude -p`, `gemini[/model]` → `gemini -p`, `codex[/model]` → `codex exec`, `devin[/model]` → `devin -p`), an `http(s)://` endpoint POSTed `{prompt, response}` returning a binary verdict (`{"pass":true|false}` or `PASS`/`FAIL` text), or a plugin judge declared via `axn-dev.judges` (`judge="<name>"` or `"<name>/<arg>"`). Falls back to `$AXN_JUDGE`; `AXN_JUDGE_TIMEOUT_MS` overrides the 60s timeout.
+
+```xml
+<assert that="llm" prompt="The response states a concrete time" judge="ollama/llama3.1"/>
+<assert that="llm" value="mentions Berlin" judge="https://jev.example/eval"/>
+```
+
+### DOM extraction: `<extract>`
+
+`<extract selector=".chat .msg:last-child" [attr="text|value|html|<attr-name>"] [url="…"/>` reads a DOM element's content into the output stream, so `contains`/`llm` assertions — and `<repeat>` blocks — can judge e.g. the last message of an interactive HTML chat. On orchestrator flows it reads the **live page** (state after prior steps); under `runner="pw"` the worker page. Requires `selector`; `attr` defaults to `text`. Without a browser context (sequential/custom/message flows) it fails with a clear error — pair it with an orchestrator or `runner="pw"`.
+
+```xml
+<extract selector=".chat-history .bubble:last-child"/>
+<assertions><assert that="llm" prompt="the reply mentions Berlin" judge="ollama/qwen2.5:14b"/></assertions>
+```
+
+### Flakiness: `<repeat>`
+
+`<repeat num="N" success="R">` wraps any steps: the children run N times and the block passes when ≥R of the iterations pass — a rate (`"0.8"`) or percent (`"80%"`, `"80"`); `success` defaults to 1. An iteration fails on a failed inner assertion or a step error; failed iterations do not stop the block, and assertions inside a repeat see only that iteration's output. The loop exits early once the threshold is unreachable. Works in every engine (axn orchestrator, sequential, custom-adapter and message flows, and the `pw` runner); nested repeats are allowed. In message-adapter flows children must be `<usermessage>`/`<assertions>` only. The block reports as a `repeat` assertion with `repeat: {runs, succeeded, needed, failures[]}` detail in the JSON report.
+
+```xml
+<repeat num="10" success="0.8">
+  <usermessage>What time is it?</usermessage>
+  <assertions>
+    <assert that="llm" prompt="states a concrete time" judge="ollama/llama3.1"/>
+  </assertions>
+</repeat>
+```
+
+### Locating flows/scenarios (`paths:`)
+
+By default flows live in `<root>/flows/` and scenarios in `<root>/scenarios/`. Override per repo or globally — precedence: **env > repo `.axn-dev/config.yaml` > `~/.axn-dev/config.yaml`**:
+
+```yaml
+paths:
+  flows: qa/flows            # or [qa/flows, e2e/flows]
+  scenarios: qa/scenarios    # relative to each scanned root…
+  # …or absolute paths, scanned as standalone locations
+```
+
+```bash
+AXN_FLOW_DIRS=qa/flows,e2e/flows AXN_SCENARIO_DIRS=/data/scenarios axn-dev list
 ```
 
 ## Core commands

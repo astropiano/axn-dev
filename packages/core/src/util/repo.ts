@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { configSection, loadAxnDevConfig, loadAxnDevConfigFile, loadScenarioConfig, type AxnDevConfig, type DevServerSpec } from "./config.js";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { configSection, loadAxnDevConfig, loadAxnDevConfigFile, loadScenarioConfig, scenarioDirNames, type AxnDevConfig, type DevServerSpec } from "./config.js";
 import { detectScenarioType } from "../driver.js";
 import { getCanonicalRepoName, getWorktreeInfo, getWorktreeInfoAsync, type Worktree, type WorktreeInfo } from "./worktree.js";
 
@@ -329,20 +329,32 @@ function buildScenarioInfo(
  * nested root, or the layout has exactly one — scanning is scoped to it.
  * A non-trivial root's basename becomes the scenario `variant`.
  */
-export function discoverScenarios(ctx: RepoContext): ScenarioInfo[] {
+export function discoverScenarios(ctx: RepoContext, dirNames?: string[]): ScenarioInfo[] {
   const scenarios: ScenarioInfo[] = [];
   const repoRoot = resolve(ctx.repoRoot);
+  const names = dirNames ?? scenarioDirNames(loadAxnDevConfig(repoRoot));
+  const seen = new Set<string>();
+
+  const scan = (dir: string, source: "repo" | "global", variant?: string) => {
+    const key = resolve(dir);
+    if (seen.has(key) || !existsSync(key)) return;
+    seen.add(key);
+    for (const entry of readdirSync(key)) {
+      const info = buildScenarioInfo(entry, join(key, entry), source, variant);
+      if (info) scenarios.push(info);
+    }
+  };
 
   for (const root of expandScenarioRoots(repoRoot)) {
     if (ctx.variantRoot && root !== resolve(ctx.variantRoot)) continue;
-    const scenariosDir = join(root, "scenarios");
-    if (!existsSync(scenariosDir)) continue;
-
     const variant = root !== repoRoot ? basename(root) : undefined;
-    for (const entry of readdirSync(scenariosDir)) {
-      const info = buildScenarioInfo(entry, join(scenariosDir, entry), "repo", variant);
-      if (info) scenarios.push(info);
+    for (const name of names) {
+      if (!isAbsolute(name)) scan(join(root, name), "repo", variant);
     }
+  }
+  // Absolute configured dirs scan once as standalone locations.
+  for (const name of names) {
+    if (isAbsolute(name)) scan(name, "repo", ctx.variant);
   }
 
   return scenarios;
@@ -458,19 +470,30 @@ export async function discoverAllProjectScenariosAsync(config: AxnDevConfig): Pr
  * Scan a single integration repo's scenario roots for scenarios — same
  * `scenarios.roots` layout mechanism as project repos.
  */
-function scanIntegrationScenarios(integrationRoot: string): ScenarioInfo[] {
+function scanIntegrationScenarios(integrationRoot: string, dirNames?: string[]): ScenarioInfo[] {
   const root = resolve(integrationRoot);
+  const names = dirNames ?? scenarioDirNames(loadAxnDevConfig(root));
   const scenarios: ScenarioInfo[] = [];
+  const seen = new Set<string>();
 
-  for (const scenarioRoot of expandScenarioRoots(root)) {
-    const scenariosDir = join(scenarioRoot, "scenarios");
-    if (!existsSync(scenariosDir)) continue;
-
-    const variant = scenarioRoot !== root ? basename(scenarioRoot) : undefined;
-    for (const entry of readdirSync(scenariosDir)) {
-      const info = buildScenarioInfo(entry, join(scenariosDir, entry), "global", variant);
+  const scan = (dir: string, variant?: string) => {
+    const key = resolve(dir);
+    if (seen.has(key) || !existsSync(key)) return;
+    seen.add(key);
+    for (const entry of readdirSync(key)) {
+      const info = buildScenarioInfo(entry, join(key, entry), "global", variant);
       if (info) scenarios.push(info);
     }
+  };
+
+  for (const scenarioRoot of expandScenarioRoots(root)) {
+    const variant = scenarioRoot !== root ? basename(scenarioRoot) : undefined;
+    for (const name of names) {
+      if (!isAbsolute(name)) scan(join(scenarioRoot, name), variant);
+    }
+  }
+  for (const name of names) {
+    if (isAbsolute(name)) scan(name);
   }
 
   return scenarios;

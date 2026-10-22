@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { parseBody } from "./utils.js";
-import { discoverAllFlowsAsync, flowRoots, flowRootsAsync, isEvidencePathAllowed, isFlowFileAllowed } from "../flows.js";
+import { discoverAllFlowsAsync, flowRoots, flowRootsAsync, isEvidencePathAllowed, isFlowFileAllowed, flowDirNames } from "../flows.js";
 import { evidenceDirFor, loadFlowsFromFileSafe } from "@axn-dev/flow-format";
 import { ManualFlowRunner, type ManualFlowInput } from "@axn-dev/flow-format";
 import type { ServeContext } from "../types.js";
@@ -19,7 +19,7 @@ export async function handleManualFlowView(ctx: ServeContext, url: URL, res: Ser
     discoverAllFlowsAsync(config),
   ]);
 
-  if (!isFlowFileAllowed(file, roots)) {
+  if (!isFlowFileAllowed(file, roots, flowDirNames(ctx.discovery.getConfig()))) {
     res.writeHead(403, { "Content-Type": "text/html" });
     res.end("<h1>Forbidden</h1>");
     return;
@@ -76,7 +76,7 @@ export async function handleManualEvidenceUpload(
   const dirParam = url.searchParams.get("dir") ?? "";
 
   const roots = flowRoots(ctx.discovery.getConfig());
-  if (!file || !isFlowFileAllowed(file, roots)) {
+  if (!file || !isFlowFileAllowed(file, roots, flowDirNames(ctx.discovery.getConfig()))) {
     res.writeHead(403, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Unknown flow file" }));
     return;
@@ -84,7 +84,7 @@ export async function handleManualEvidenceUpload(
 
   let dir: string;
   if (dirParam) {
-    if (!isEvidencePathAllowed(join(dirParam, "x"), roots)) {
+    if (!isEvidencePathAllowed(join(dirParam, "x"), roots, flowDirNames(ctx.discovery.getConfig()))) {
       res.writeHead(403, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Evidence dir is not allowed" }));
       return;
@@ -127,7 +127,7 @@ export async function handleManualFlowSubmit(ctx: ServeContext, req: IncomingMes
   const config = ctx.discovery.getConfig();
   const roots = await flowRootsAsync(config);
 
-  if (!isFlowFileAllowed(file, roots)) {
+  if (!isFlowFileAllowed(file, roots, flowDirNames(ctx.discovery.getConfig()))) {
     res.writeHead(403, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Unknown flow file" }));
     return;

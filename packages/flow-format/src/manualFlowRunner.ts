@@ -234,13 +234,19 @@ export class ManualFlowRunner {
         console.log(`    - ${c.description ?? c.src ?? c.type}`);
       }
     }
+    if (step.type === "repeat") {
+      console.log(`  Repeat ${step.num ?? "?"}× (≥${Math.round((step.success ?? 1) * 100)}% must pass) covering ${step.children?.length ?? 0} step(s):`);
+      for (const c of step.children ?? []) {
+        console.log(`    - ${c.description ?? c.src ?? c.type}`);
+      }
+    }
 
     let response: string | undefined;
     if (step.type !== "assertions") {
       response = await ask("  Observed response/output (optional): ");
     }
 
-    if (step.type === "assertions" && step.assertions && step.assertions.length > 0) {
+    if (step.assertions && step.assertions.length > 0) {
       for (const assertion of step.assertions) {
         console.log(`  ${describeAssertion(assertion)}`);
         const actual = await ask("    Actual value (optional): ");

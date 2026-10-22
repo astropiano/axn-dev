@@ -97,6 +97,8 @@ Notes:
 | `flowAdapters[].extends` | Optional base adapter name — its resolved instance is passed to your module's factory
 | `flowAdapters[].wantsScenario` | `true` → the flow engine starts the scenario, probes readiness, and passes `ctx.baseUrl` before `run()`
 | `flowAdapters[].entry`   | Optional adapter module path, relative to package root (defaults to the package entry)
+| `judges[].name`          | Flow judge name — used by `judge="<name>"` (or `judge="<name>/<arg>"`) on `that="llm"` asserts
+| `judges[].entry`         | Optional judge module path, relative to package root (defaults to the package entry)
 | `deviceEnvResolvers[].name` | Device-env resolver name (diagnostics only)
 | `deviceEnvResolvers[].entry` | Optional resolver module path, relative to package root (defaults to the package entry)
 |===
@@ -264,6 +266,47 @@ export const resolver: DeviceEnvResolverFn = (device) => {
 When no registered resolver handles the name, the caller reports
 "no device-env resolver could handle '<device>'". Resolvers are tried in
 registration order.
+
+== Contributing a flow judge
+
+The fifth extension axis adds evaluators for `that="llm"` assertions —
+anything that can turn (rubric, output) into a binary verdict: a custom LLM
+gateway, a fine-tuned classifier, a hosted eval service, another agent CLI:
+
+[source,json]
+----
+{
+  "axn-dev": {
+    "judges": [
+      { "name": "my-judge", "entry": "dist/judge.js" }
+    ]
+  }
+}
+----
+
+The module must export `judge` (or a default export) — a `FlowJudge`
+function; `judges` may alternatively export a name→function map:
+
+[source,ts]
+----
+import type { FlowJudge } from "@axn-dev/core";
+
+export const judge: FlowJudge = async ({ rubric, response, arg, env }) => {
+  const res = await fetch(`${env.MY_EVAL_URL}/eval`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: rubric, response, preset: arg }),
+  });
+  const { pass } = await res.json();
+  return { passed: pass, actual: `my-judge → ${pass ? "PASS" : "FAIL"}` };
+};
+----
+
+Selected via `judge="my-judge"` or `judge="my-judge/<arg>"` (the suffix
+arrives as `input.arg`). Built-in judge forms are checked first —
+`ollama/<model>`, `openai/<model>`, the local agent CLIs (`claude`,
+`gemini`, `codex`), and `http(s)://` endpoints — so plugin names cannot
+shadow them.
 
 == Plugin config sections
 

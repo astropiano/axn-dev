@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   detectRepo,
   discoverScenarios,
@@ -14,6 +14,7 @@ import {
   loadAxnDevConfig,
   loadWorkspaceConfig,
   repoNameToEnvVar,
+  scenarioDirNames,
   type AxnDevConfig,
   type WorkspaceConfig,
 } from "./config.js";
@@ -93,7 +94,10 @@ export class ScenarioDiscoveryService {
     if (this.workbase || !this.repoContext) return config;
     const { repoRoot, repoName } = this.repoContext;
     if (!repoName.endsWith("-integration")) return config;
-    if (!existsSync(join(repoRoot, "scenarios"))) return config;
+    const hasScenarioDir = scenarioDirNames(loadAxnDevConfig(repoRoot)).some(
+      (n) => existsSync(isAbsolute(n) ? n : join(repoRoot, n))
+    );
+    if (!hasScenarioDir) return config;
 
     const currentPath = repoRoot.replace(/\/+$/, "");
     const seen = new Set<string>();

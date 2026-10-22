@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { XMLParser } from "fast-xml-parser";
-import { getWorktreeInfo, getWorktreeInfoAsync } from "@axn-dev/core";
+import { getWorktreeInfo, getWorktreeInfoAsync, flowDirNames } from "@axn-dev/core";
 import type { AxnDevConfig } from "@axn-dev/core";
 
 export interface ParsedModel {
@@ -14,6 +14,11 @@ export interface ParsedAssertion {
   value: string;
   /** Optional human-readable description for the assertion (manual flows/reporting) */
   description?: string;
+  /** that="llm": judge rubric — defaults to `value` when omitted */
+  prompt?: string;
+  /** that="llm": judge to evaluate with — "ollama/<model>", "openai/<model>",
+   * or an http(s):// binary judge endpoint. Falls back to $AXN_JUDGE. */
+  judge?: string;
   /** that="screenshot": CSS selector — capture only this element (omit = whole page) */
   selector?: string;
   /** that="screenshot": page URL, supports ${VAR} expansion (defaults to BASE_URL) */
@@ -28,6 +33,16 @@ export interface ParsedAssertion {
   viewport?: string;
   /** that="screenshot": settle wait — ms ("500") or a CSS selector to wait for */
   wait?: string;
+  /** evaluate against output produced since the previous assertion only —
+   *  the "window" — instead of the full accumulated output */
+  fresh?: boolean;
+  /** that="script": path to a ts/js assertion script (relative to the flow
+   *  file); it gets the output under test as $AXN_OUTPUT, exit 0 = pass */
+  src?: string;
+  /** that="duration": lower bound in ms */
+  min?: number;
+  /** that="duration": upper bound in ms (defaults to numeric `value`) */
+  max?: number;
 }
 
 function parseAssertAttrs(attrs: Record<string, any>, text?: string): ParsedAssertion {
@@ -36,6 +51,12 @@ function parseAssertAttrs(attrs: Record<string, any>, text?: string): ParsedAsse
     that: String(attrs.that ?? ""),
     value: attrs.value !== undefined ? String(attrs.value) : "",
     description: attrs.description ?? attrs.desc ?? (text || undefined),
+    prompt: attrs.prompt !== undefined ? String(attrs.prompt) : undefined,
+    judge: attrs.judge !== undefined ? String(attrs.judge) : undefined,
+    fresh: attrs.fresh === true || String(attrs.fresh) === "true" || attrs.fresh === "" || undefined,
+    src: attrs.src !== undefined ? String(attrs.src) : undefined,
+    min: num(attrs.min),
+    max: num(attrs.max),
     selector: attrs.selector !== undefined ? String(attrs.selector) : undefined,
     url: attrs.url !== undefined ? String(attrs.url) : undefined,
     fullPage: attrs.fullPage === true || String(attrs.fullPage) === "true" || undefined,
@@ -82,7 +103,9 @@ export interface ParsedStep {
   args?: Record<string, string>;
   /** Override the scenario adapter for this step */
   adapter?: string;
-  /** Present when type === "assertions" — a verification step */
+  /** type === "assertions": the block's asserts. On producing steps: nested
+   *  <assert>/<assertions> children that evaluate this step's own output
+   *  (the step is the explicit subject under test) */
   assertions?: ParsedAssertion[];
   /** picture/video: artifact name (required for evidence steps) */
   name?: string;
@@ -92,6 +115,16 @@ export interface ParsedStep {
   fullPage?: boolean;
   /** video: steps recorded by this segment */
   children?: ParsedStep[];
+  /** repeat: number of iterations the children run */
+  num?: number;
+  /** repeat: minimum success rate (0..1) required for the block to pass */
+  success?: number;
+  /** extract: element attribute to read — "text" (default), "value", "html",
+   *  or any attribute name */
+  attr?: string;
+  /** extract: page URL for standalone (no-orchestrator) reads; ${VAR} allowed,
+   *  defaults to BASE_URL */
+  url?: string;
 }
 
 export interface ParsedFlow {
@@ -122,6 +155,13 @@ export interface AssertionResult {
   description?: string;
   /** User-supplied notes (manual flows) */
   notes?: string;
+  /** that="repeat": per-iteration stats of a repeat block */
+  repeat?: {
+    runs: number;
+    succeeded: number;
+    needed: number;
+    failures: string[];
+  };
 }
 
 /** Step-level result for manual flow executions. */
@@ -179,7 +219,7 @@ export function normalizeRunnerName(value?: string | null): string | undefined {
 
 const flowXmlArrays = new Set([
   "flow", "scenario", "model", "assert", "step", "script",
-  "var", "readiness", "tag", "picture", "video",
+  "var", "readiness", "tag", "picture", "video", "repeat", "extract",
 ]);
 
 const xmlParser = new XMLParser({
@@ -235,6 +275,30 @@ function elementTag(node: OrderedNode): string | null {
 
 /** Convert one ordered-parse node inside <steps> to a ParsedStep. Returns
  * null for non-element nodes (text, comments). */
+/** Nested <assert>/<assertions> children of a step node — step-scoped
+ * asserts that evaluate only that step's own output. */
+function nestedAsserts(children: OrderedNode[] | undefined): ParsedAssertion[] {
+  const out: ParsedAssertion[] = [];
+  for (const c of children ?? []) {
+    if (c.assert !== undefined) {
+      out.push(parseAssertAttrs(nodeAttrs(c), nodeText(c, "assert") || undefined));
+    } else if (c.assertions !== undefined) {
+      const blockAttrs = nodeAttrs(c);
+      const blockFresh = blockAttrs.fresh === "true" || blockAttrs.fresh === "";
+      const blockDesc = blockAttrs.description ?? blockAttrs.desc ?? nodeText(c, "assertions") ?? undefined;
+      for (const a of (c.assertions as OrderedNode[]).filter((x) => x.assert !== undefined)) {
+        const parsed = parseAssertAttrs(nodeAttrs(a), nodeText(a, "assert") || undefined);
+        out.push({
+          ...parsed,
+          fresh: parsed.fresh ?? (blockFresh || undefined),
+          description: parsed.description ?? blockDesc,
+        });
+      }
+    }
+  }
+  return out;
+}
+
 function stepNodeToParsedStep(child: OrderedNode): ParsedStep | null {
   const attrs = nodeAttrs(child);
   const desc = attrs.description ?? attrs.desc;
@@ -243,7 +307,8 @@ function stepNodeToParsedStep(child: OrderedNode): ParsedStep | null {
     const text = nodeText(child, "usermessage");
     const value = attrs.value ?? text;
     const description = desc || (attrs.value ? text : undefined);
-    return { type: "message", value, description, adapter: attrs.adapter };
+    const nested = nestedAsserts(child.usermessage as OrderedNode[]);
+    return { type: "message", value, description, adapter: attrs.adapter, assertions: nested.length ? nested : undefined };
   }
 
   if (child.step !== undefined || child.script !== undefined) {
@@ -257,6 +322,7 @@ function stepNodeToParsedStep(child: OrderedNode): ParsedStep | null {
       if (["src", "script", "description", "desc", "lang", "runner", "adapter", "value"].includes(k)) continue;
       stepArgs[k] = v;
     }
+    const nested = nestedAsserts(child[tag] as OrderedNode[]);
     return {
       type: "script",
       description: desc || (hasSource ? text || undefined : undefined),
@@ -266,6 +332,15 @@ function stepNodeToParsedStep(child: OrderedNode): ParsedStep | null {
       args: stepArgs,
       adapter: attrs.adapter,
       value: stepValue,
+      assertions: nested.length ? nested : undefined,
+    };
+  }
+
+  // A bare <assert> between steps is sugar for a one-assertion block.
+  if (child.assert !== undefined) {
+    return {
+      type: "assertions",
+      assertions: [parseAssertAttrs(attrs, nodeText(child, "assert") || undefined)],
     };
   }
 
@@ -291,14 +366,50 @@ function stepNodeToParsedStep(child: OrderedNode): ParsedStep | null {
     };
   }
 
+  if (child.extract !== undefined) {
+    if (!attrs.selector) {
+      throw new Error(`<extract> requires a 'selector' attribute`);
+    }
+    const nested = nestedAsserts(child.extract as OrderedNode[]);
+    return {
+      type: "extract",
+      name: attrs.name,
+      selector: attrs.selector,
+      attr: attrs.attr,
+      url: attrs.url,
+      description: desc || nodeText(child, "extract") || undefined,
+      assertions: nested.length ? nested : undefined,
+    };
+  }
+
+  if (child.repeat !== undefined) {
+    const inner = (child.repeat as OrderedNode[])
+      .map(stepNodeToParsedStep)
+      .filter((s): s is ParsedStep => s !== null);
+    return {
+      type: "repeat",
+      num: parseRepeatNum(attrs.num),
+      success: parseRepeatSuccess(attrs.success),
+      children: inner,
+      description: desc || nodeText(child, "repeat") || undefined,
+    };
+  }
+
   if (child.assertions !== undefined) {
+    const blockFresh = attrs.fresh === "true" || attrs.fresh === "";
+    const blockDesc = desc || nodeText(child, "assertions") || undefined;
     const assertNodes = (child.assertions as OrderedNode[]).filter((a) => a.assert !== undefined);
     return {
       type: "assertions",
-      description: desc || nodeText(child, "assertions") || undefined,
-      assertions: assertNodes.map((a) =>
-        parseAssertAttrs(nodeAttrs(a), nodeText(a, "assert") || undefined)
-      ),
+      description: blockDesc,
+      assertions: assertNodes.map((a) => {
+        const parsed = parseAssertAttrs(nodeAttrs(a), nodeText(a, "assert") || undefined);
+        return {
+          ...parsed,
+          fresh: parsed.fresh ?? (blockFresh || undefined),
+          description: parsed.description ?? blockDesc,
+        };
+      }),
     };
   }
 
@@ -307,6 +418,7 @@ function stepNodeToParsedStep(child: OrderedNode): ParsedStep | null {
   const tag = elementTag(child);
   if (!tag) return null;
   const text = nodeText(child, tag);
+  const nested = nestedAsserts((child as Record<string, unknown>)[tag] as OrderedNode[]);
   const stepArgs: Record<string, string> = {};
   for (const [k, v] of Object.entries(attrs)) {
     if (["src", "script", "description", "desc", "adapter", "value"].includes(k)) continue;
@@ -319,7 +431,32 @@ function stepNodeToParsedStep(child: OrderedNode): ParsedStep | null {
     src: attrs.src ?? attrs.script,
     adapter: attrs.adapter,
     args: stepArgs,
+    assertions: nested.length ? nested : undefined,
   };
+}
+
+/** <repeat num="N"> — required positive integer iteration count. */
+function parseRepeatNum(v: string | undefined): number {
+  const n = parseInt(v ?? "", 10);
+  if (!v || isNaN(n) || n < 1) {
+    throw new Error(`<repeat> requires a positive integer 'num' attribute (got '${v ?? ""}')`);
+  }
+  return n;
+}
+
+/** <repeat success="R"> — minimum success rate. Accepts 0–1 ("0.8") or a
+ * percent ("80", "80%"). Defaults to 1 (every iteration must pass). */
+function parseRepeatSuccess(v: string | undefined): number {
+  if (v === undefined) return 1;
+  const n = Number(v.trim().replace(/%$/, ""));
+  if (isNaN(n)) {
+    throw new Error(`<repeat success="${v}"> must be a rate 0–1 or a percent (e.g. "0.8" or "80%")`);
+  }
+  const rate = n > 1 ? n / 100 : n;
+  if (rate <= 0 || rate > 1) {
+    throw new Error(`<repeat success="${v}"> out of range — expected (0,1] or 1–100%`);
+  }
+  return rate;
 }
 
 /**
@@ -495,6 +632,10 @@ export function expandStepRefs(
   const dirs = stepSearchDirs(flowDir, includeSpecs);
 
   const expand = (step: ParsedStep, stack: string[]): ParsedStep => {
+    // Container units (<video>) hold steps of their own; refs inside them bind like top-level ones.
+    if (step.children) {
+      return { ...step, children: step.children.map((c) => expand(c, stack)) };
+    }
     const ref = stepRefOf(step);
     if (!ref) return step;
 
@@ -750,6 +891,51 @@ export function parseFlow(raw: any): ParsedFlow {
     });
   }
 
+  // <repeat> blocks — flat fallback; child order within a repeat is
+  // best-effort (the ordered parse is authoritative).
+  const rawRepeats = rawSteps?.repeat
+    ? (Array.isArray(rawSteps.repeat) ? rawSteps.repeat : [rawSteps.repeat])
+    : [];
+  for (const r of rawRepeats) {
+    const children: ParsedStep[] = [];
+    const toArr = (v: any) => (v ? (Array.isArray(v) ? v : [v]) : []);
+    const innerScripts = r?.step ?? r?.script;
+    for (const s of toArr(innerScripts)) children.push(flatScriptStep(s));
+    for (const p of toArr(r?.picture)) children.push(flatPictureStep(p));
+    for (const x of toArr(r?.extract)) {
+      children.push({
+        type: "extract",
+        name: x?.name,
+        selector: x?.selector,
+        attr: x?.attr,
+        url: x?.url,
+        description: x?.description ?? x?.desc,
+      });
+    }
+    for (const m of toArr(r?.usermessage)) {
+      children.push({
+        type: "message",
+        value: typeof m === "object" ? (m?.value ?? m?.["#text"] ?? "") : String(m),
+        adapter: typeof m === "object" ? m?.adapter : undefined,
+      });
+    }
+    for (const a of toArr(r?.assertions)) {
+      children.push({
+        type: "assertions",
+        assertions: toArr(a?.assert).map((x: any) =>
+          typeof x === "object" && x !== null ? parseAssertAttrs(x, x["#text"]) : parseAssertAttrs({})
+        ),
+      });
+    }
+    steps.push({
+      type: "repeat",
+      num: parseRepeatNum(r?.num !== undefined ? String(r.num) : undefined),
+      success: parseRepeatSuccess(r?.success !== undefined ? String(r.success) : undefined),
+      children,
+      description: r?.description ?? r?.desc,
+    });
+  }
+
   const assertions = (rawSteps?.assertions?.assert || []).map((a: any) =>
     typeof a === "object" && a !== null
       ? parseAssertAttrs(a, a["#text"])
@@ -823,29 +1009,42 @@ export interface FlowReportFile {
   flowNames: string[];
 }
 
-function scanFlowsDir(root: string, scope: "global" | "project", rootName?: string): FlowInfo[] {
-  const flowsDir = join(root, "flows");
-  if (!existsSync(flowsDir)) return [];
-
+function scanFlowsDir(
+  root: string,
+  scope: "global" | "project",
+  rootName?: string,
+  dirNames: string[] = ["flows"],
+): FlowInfo[] {
   const flows: FlowInfo[] = [];
-  for (const entry of readdirSync(flowsDir, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith(".xml")) continue;
-    const file = join(flowsDir, entry.name);
+  const seenFiles = new Set<string>();
 
-    for (const f of loadFlowsFromFileSafe(file)) {
-      flows.push({
-        name: f.name,
-        description: f.description,
-        file,
-        fileName: entry.name,
-        root,
-        rootName: rootName ?? basename(root),
-        scope,
-        adapters: [...new Set(f.scenarios.map((s) => s.adapter).filter(Boolean))],
-        models: f.models.map((m) => [m.provider, m.name].filter(Boolean).join("/")),
-        orchestrator: f.orchestrator,
-        tags: f.tags,
-      });
+  for (const name of dirNames) {
+    const flowsDir = isAbsolute(name) ? name : join(root, name);
+    if (!existsSync(flowsDir)) continue;
+    // Absolute entries get their parent as the display root.
+    const effRoot = isAbsolute(name) ? dirname(resolve(flowsDir)) : root;
+
+    for (const entry of readdirSync(flowsDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".xml")) continue;
+      const file = join(flowsDir, entry.name);
+      if (seenFiles.has(resolve(file))) continue;
+      seenFiles.add(resolve(file));
+
+      for (const f of loadFlowsFromFileSafe(file)) {
+        flows.push({
+          name: f.name,
+          description: f.description,
+          file,
+          fileName: entry.name,
+          root: effRoot,
+          rootName: rootName ?? basename(effRoot),
+          scope,
+          adapters: [...new Set(f.scenarios.map((s) => s.adapter).filter(Boolean))],
+          models: f.models.map((m) => [m.provider, m.name].filter(Boolean).join("/")),
+          orchestrator: f.orchestrator,
+          tags: f.tags,
+        });
+      }
     }
   }
   return flows;
@@ -881,9 +1080,14 @@ async function repoNameByPathAsync(config: AxnDevConfig): Promise<Map<string, st
 /**
  * Global flows: flows/*.xml inside each configured integration repo.
  */
-export function discoverFlows(integrationRoots: string[], nameMap?: Map<string, string>): FlowInfo[] {
+export function discoverFlows(
+  integrationRoots: string[],
+  nameMap?: Map<string, string>,
+  dirNames?: string[],
+): FlowInfo[] {
+  const names = dirNames ?? flowDirNames();
   const flows = integrationRoots.flatMap((root) =>
-    scanFlowsDir(root, "global", nameMap?.get(resolve(root).replace(/\/+$/, ""))));
+    scanFlowsDir(root, "global", nameMap?.get(resolve(root).replace(/\/+$/, "")), names));
   return flows.sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -893,6 +1097,7 @@ export function discoverFlows(integrationRoots: string[], nameMap?: Map<string, 
  */
 export function discoverProjectFlows(config: AxnDevConfig): FlowInfo[] {
   const integrationPaths = new Set(config.integration.map((p) => resolve(p).replace(/\/+$/, "")));
+  const dirNames = flowDirNames(config);
   const flows: FlowInfo[] = [];
   const seen = new Set<string>();
 
@@ -903,7 +1108,7 @@ export function discoverProjectFlows(config: AxnDevConfig): FlowInfo[] {
       if (seen.has(wtPath) || integrationPaths.has(wtPath)) continue;
       seen.add(wtPath);
       if (!existsSync(wt.path) || !existsSync(join(wt.path, ".git"))) continue;
-      flows.push(...scanFlowsDir(wt.path, "project", repoName));
+      flows.push(...scanFlowsDir(wt.path, "project", repoName, dirNames));
     }
   }
 
@@ -913,6 +1118,7 @@ export function discoverProjectFlows(config: AxnDevConfig): FlowInfo[] {
 /** Async variant of discoverProjectFlows — per-repo git lookups run in parallel. */
 export async function discoverProjectFlowsAsync(config: AxnDevConfig): Promise<FlowInfo[]> {
   const integrationPaths = new Set(config.integration.map((p) => resolve(p).replace(/\/+$/, "")));
+  const dirNames = flowDirNames(config);
   const seen = new Set<string>();
 
   const perRepo = await Promise.all(
@@ -924,7 +1130,7 @@ export async function discoverProjectFlowsAsync(config: AxnDevConfig): Promise<F
         if (seen.has(wtPath) || integrationPaths.has(wtPath)) continue;
         seen.add(wtPath);
         if (!existsSync(wt.path) || !existsSync(join(wt.path, ".git"))) continue;
-        flows.push(...scanFlowsDir(wt.path, "project", repoName));
+        flows.push(...scanFlowsDir(wt.path, "project", repoName, dirNames));
       }
       return flows;
     }),
@@ -938,7 +1144,8 @@ export async function discoverProjectFlowsAsync(config: AxnDevConfig): Promise<F
  */
 export function discoverAllFlows(config: AxnDevConfig): FlowInfo[] {
   const nameMap = repoNameByPath(config);
-  return [...discoverFlows(config.integration, nameMap), ...discoverProjectFlows(config)]
+  const dirNames = flowDirNames(config);
+  return [...discoverFlows(config.integration, nameMap, dirNames), ...discoverProjectFlows(config)]
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -948,7 +1155,7 @@ export async function discoverAllFlowsAsync(config: AxnDevConfig): Promise<FlowI
     repoNameByPathAsync(config),
     discoverProjectFlowsAsync(config),
   ]);
-  return [...discoverFlows(config.integration, nameMap), ...projectFlows]
+  return [...discoverFlows(config.integration, nameMap, flowDirNames(config)), ...projectFlows]
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -984,8 +1191,8 @@ export async function flowRootsAsync(config: AxnDevConfig): Promise<string[]> {
 }
 
 /** Find a single flow by file + name. */
-export function findFlow(roots: string[], file: string, name: string): FlowInfo | null {
-  return discoverFlows(roots).find((f) => f.file === file && f.name === name) ?? null;
+export function findFlow(roots: string[], file: string, name: string, dirNames?: string[]): FlowInfo | null {
+  return discoverFlows(roots, undefined, dirNames).find((f) => f.file === file && f.name === name) ?? null;
 }
 
 /**
@@ -1030,20 +1237,32 @@ export function loadFlowReport(file: string): FlowReport | null {
   }
 }
 
-/** Guard: report paths must live inside a flows/.reports dir of a known root. */
-export function isReportPathAllowed(file: string, roots: string[]): boolean {
-  const dir = resolve(dirname(file));
-  if (basename(dir) !== ".reports") return false;
-  if (basename(dirname(dir)) !== "flows") return false;
-  return roots.includes(resolve(dirname(dirname(dir))).replace(/\/+$/, ""));
+/** Concrete flow dirs: <root>/<name> per configured relative name, plus
+ * absolute names as standalone dirs. */
+function allowedFlowDirs(roots: string[], dirNames: string[]): string[] {
+  const dirs = new Set<string>();
+  for (const name of dirNames) {
+    if (isAbsolute(name)) {
+      dirs.add(resolve(name));
+    } else {
+      for (const root of roots) dirs.add(join(resolve(root), name));
+    }
+  }
+  return [...dirs];
 }
 
-/** Guard: evidence paths must live under <root>/flows/.reports/evidence/ of a known root. */
-export function isEvidencePathAllowed(file: string, roots: string[]): boolean {
+/** Guard: report paths must live inside a <flowsDir>/.reports dir of a known root. */
+export function isReportPathAllowed(file: string, roots: string[], dirNames?: string[]): boolean {
+  const dir = resolve(dirname(file));
+  if (basename(dir) !== ".reports") return false;
+  return allowedFlowDirs(roots, dirNames ?? flowDirNames()).includes(resolve(dirname(dir)));
+}
+
+/** Guard: evidence paths must live under <flowsDir>/.reports/evidence/ of a known root. */
+export function isEvidencePathAllowed(file: string, roots: string[], dirNames?: string[]): boolean {
   const resolved = resolve(file);
-  for (const root of roots) {
-    const prefix = join(resolve(root), "flows", ".reports", "evidence") + sep;
-    if (resolved.startsWith(prefix)) return true;
+  for (const dir of allowedFlowDirs(roots, dirNames ?? flowDirNames())) {
+    if (resolved.startsWith(join(dir, ".reports", "evidence") + sep)) return true;
   }
   return false;
 }
@@ -1055,12 +1274,11 @@ export function isUnderEvidenceDir(file: string): boolean {
   return resolved.includes(marker);
 }
 
-/** Guard: flow file paths must be an .xml inside a flows/ dir of a known root. */
-export function isFlowFileAllowed(file: string, roots: string[]): boolean {
+/** Guard: flow file paths must be an .xml inside a configured flows dir of a known root. */
+export function isFlowFileAllowed(file: string, roots: string[], dirNames?: string[]): boolean {
   if (!file.endsWith(".xml")) return false;
   const dir = resolve(dirname(file));
-  if (basename(dir) !== "flows") return false;
-  return roots.includes(resolve(dirname(dir)).replace(/\/+$/, ""));
+  return allowedFlowDirs(roots, dirNames ?? flowDirNames()).includes(dir);
 }
 
 /** Write a FlowReport to the .reports directory next to the flow file (flows/.reports). */

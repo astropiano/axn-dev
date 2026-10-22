@@ -23,8 +23,12 @@ interface PwUnit {
   name?: string;
   selector?: string;
   fullPage?: boolean;
-  assertions?: { that: string; value: string; description?: string }[];
+  assertions?: { that: string; value: string; description?: string; prompt?: string; judge?: string }[];
   children?: PwUnit[];
+  num?: number;
+  success?: number;
+  attr?: string;
+  url?: string;
 }
 
 function pwCliPath(): string {
@@ -51,6 +55,10 @@ function toUnit(step: ParsedStep, ctx: {
     fullPage: step.fullPage,
     assertions: step.assertions,
     children: step.children?.map((c) => toUnit(c, ctx)),
+    num: step.num,
+    success: step.success,
+    attr: step.attr,
+    url: step.url,
   };
   if (step.type === "script" && (!step.adapter || step.adapter === "tsAdapter")) {
     if (step.src) {
@@ -154,7 +162,7 @@ export async function runFlowWithPlaywright(opts: {
       .filter((s: any) => s.that)
       .map((s: any) => ({
         that: s.that,
-        value: "",
+        value: s.value ?? "",
         passed: s.passed,
         actual: s.actual ?? s.error,
         description: s.description,

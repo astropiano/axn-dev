@@ -11,7 +11,7 @@ import { StartCommand } from "@axn-dev/core";
 import { StopCommand } from "@axn-dev/core";
 import { CleanCommand } from "@axn-dev/core";
 import { ScenarioDiscoveryService, resolveDeviceEnv } from "@axn-dev/core";
-import { getServiceEndpoints, getRunningScenarioPort, isScenarioRunning, resolveEndpoints, type ServiceEndpoint } from "@axn-dev/core";
+import { getComposeProjectName, getServiceEndpoints, getRunningScenarioPort, isScenarioRunning, resolveEndpoints, type ServiceEndpoint } from "@axn-dev/core";
 import { loadWorkspaceConfig, parseYaml } from "@axn-dev/core";
 import {
   flowAdapter,
@@ -35,10 +35,30 @@ import type {
 } from "@axn-dev/flow-format";
 import { ManualFlowRunner } from "@axn-dev/flow-format";
 import { evaluateScreenshotAssertion } from "./screenshot.js";
+import { evaluateLlmAssertion } from "./llm-judge.js";
 import { AdapterRegistry } from "./adapters/adapterRegistry.js";
 import { loadAxnDevConfig, configSection } from "@axn-dev/core";
 import { listFlowFiles } from "@axn-dev/flow-format";
 import { runFlowWithPlaywright } from "./pw/pw-runner.js";
+import { expandEnvVars, expandFlowEnv } from "./env-expand.js";
+
+/**
+ * Execution scope for a stretch of steps. The outer scope covers the whole
+ * flow; a <repeat> iteration gets a child scope so a failed iteration does
+ * not stop the block or leak its output into sibling iterations.
+ */
+interface ExecScope {
+  /** A contained assertion failed — remaining children of this scope skip. */
+  stopped: boolean;
+  /** Assertion results collected in this scope (outer: flowResult.assertions). */
+  sink: AssertionResult[];
+  /** Char offset into the accumulated output — the scope's assertions only
+   * see output produced after this offset (per-iteration isolation). */
+  stdoutBase: number;
+  /** End position of the last assertions step — `fresh` asserts evaluate
+   * output produced since this point. */
+  cursor?: number;
+}
 
 const FLOW_FLAGS = [
   "--file", "-f", "--model", "-m", "--filter", "-t", "--suite",
@@ -127,7 +147,43 @@ Adapters decide how steps run:
                           then adapters/<name>.ts|.js next to the flow file.
 
 Assertions:
-  <assert that="contains|num_responses|exitCode|screenshot" .../>
+  <assert that="contains|num_responses|exitCode|screenshot|llm|duration|script" .../>
+  Placement:
+    - bare <assert/> between steps — evaluates the output accumulated so far;
+      add fresh="true" to see only output produced since the previous assert
+    - <assertions desc="..."> — a named report group: desc= labels all its
+      asserts in reports, fresh="true" applies to the whole group
+    - nested inside a producing step (<step>, <usermessage>, <extract>,
+      custom tags) — evaluates THAT step's own output: the step is the
+      subject under test
+  that="llm"                Judge the captured output with an LLM or a binary
+                          judge service. Rubric comes from 'prompt', 'value'
+                          or the element body; 'judge' selects the evaluator:
+                          'ollama/<model>' (OLLAMA_BASE_URL), 'openai/<model>'
+                          (OPENAI_API_KEY, OPENAI_BASE_URL), or an http(s)://
+                          endpoint POSTed {prompt, response} that must return
+                          a binary verdict ({pass:true|false} or PASS/FAIL).
+                          Defaults to $AXN_JUDGE.
+  that="duration"           Step wall-clock time in ms — min=/max= bounds, or
+                          numeric 'value' as shorthand max. Needs a step
+                          context (nested on a producing step).
+  that="script"             A ts/js assertion script (src= or value=) run via
+                          tsx; gets the output under test as $AXN_OUTPUT and
+                          the assert as $AXN_ASSERT; exit 0 = pass.
+  that="llm"                (see above)
+
+Flakiness / non-determinism:
+  <repeat num="N" success="R"> wraps steps: the children run N times and the
+  block passes when at least R (a rate "0.8" or a percent "80%") of the
+  iterations pass. An iteration fails on a failed inner assertion or a step
+  error; failed iterations do not stop the block. Assertions inside a repeat
+  see only that iteration's output. Repeats nest; the block reports as a
+  'repeat' assertion with per-run stats in the JSON report.
+  <extract selector="..." [attr="text|value|html|<name>"]/> reads a DOM
+                          element's content into the output stream — e.g. the
+                          last message of an interactive HTML chat — so
+                          contains/llm assertions can judge it. Runs on the
+                          live page (orchestrator) or the PW runner.
   that="screenshot"         Capture the page (or the 'selector' element) at 'url'
                           (default: BASE_URL) with headless Chromium and compare
                           it against the reference PNG at 'value' (relative to
@@ -424,15 +480,17 @@ Examples:
       return [await this.runTsAdapterFlow(flow, tsScenario, startedScenarios, infra, autoPort, portFlag)];
     }
 
+    const isCustomUnit = (s: ParsedStep) =>
+      // <script adapter="x"> routed to a non-message adapter (plugin or file)
+      (s.type === "script" &&
+        !!s.adapter &&
+        s.adapter !== "tsAdapter" &&
+        !this.servesMessage(s.adapter)) ||
+      // custom step tags dispatch to the adapter owning the tag; <repeat>
+      // itself is a container — its children are checked individually
+      (s.type !== "script" && s.type !== "message" && s.type !== "assertions" && s.type !== "repeat" && s.type !== "extract");
     const hasCustomAdapterStep = flow.steps.some(
-      (s) =>
-        // <script adapter="x"> routed to a non-message adapter (plugin or file)
-        (s.type === "script" &&
-          !!s.adapter &&
-          s.adapter !== "tsAdapter" &&
-          !this.servesMessage(s.adapter)) ||
-        // custom step tags dispatch to the adapter owning the tag
-        (s.type !== "script" && s.type !== "message" && s.type !== "assertions")
+      (s) => isCustomUnit(s) || (s.children ?? []).some(isCustomUnit)
     );
     if (hasCustomAdapterStep) {
       return [await this.runCustomAdapterFlow(flow)];
@@ -463,9 +521,14 @@ Examples:
       );
     }
 
+    const hasMessageStep = flow.steps.some(
+      (s) =>
+        s.type === "message" ||
+        (s.type === "repeat" && (s.children ?? []).some((c) => c.type === "message"))
+    );
     const messageStep = flow.steps.find((s) => s.type === "message");
     const message = messageStep?.value || flow.userMessage;
-    if (!message) {
+    if (!message && !hasMessageStep) {
       throw new Error(`Flow '${flow.name}' is missing <usermessage>`);
     }
 
@@ -483,21 +546,60 @@ Examples:
 
       try {
         const activeScenario = msgScenario;
-        const effectiveStep = messageStep ?? { type: "message" as const, value: message };
-        const response = await this.runMessageStep(flow, effectiveStep, model, activeScenario, startedScenarios, null, undefined, undefined, autoPort, portFlag);
-
-        flowResult.response = response;
-
         const assertCtx = {
           flowDir: dirname(this._resolvedFilePath!),
           env: this.expandEnvVars({ ...(process.env as Record<string, string>), ...flow.env }),
           flowName: flow.name,
         };
-        for (const assertion of flow.assertions) {
-          const result = await this.evaluateAssertion(assertion, response, undefined, assertCtx);
-          flowResult.assertions.push(result);
+        let responseText = "";
+        const scope: ExecScope = { stopped: false, sink: flowResult.assertions, stdoutBase: 0 };
+
+        const runUnit = async (u: ParsedStep, sc: ExecScope, inRepeat = false): Promise<void> => {
+          if (u.type === "extract") {
+            throw new Error(`<extract> needs a browser page — use a tsAdapter flow with orchestrator= or runner="pw"`);
+          }
+          if (inRepeat && u.type !== "message" && u.type !== "assertions" && u.type !== "repeat") {
+            throw new Error(
+              `<${u.type}> inside <repeat> is not supported in a '${activeScenario.adapter}' flow — ` +
+                `repeat children must be <usermessage> or <assertions>`
+            );
+          }
+          if (u.type === "message") {
+            const t0 = Date.now();
+            const r = await this.runMessageStep(flow, u, model, activeScenario, startedScenarios, null, undefined, undefined, autoPort, portFlag);
+            responseText += (responseText ? "\n" : "") + r;
+            await this.evalStepAsserts(u, r, sc, assertCtx, 0, Date.now() - t0);
+          } else if (u.type === "assertions") {
+            for (const a of u.assertions ?? []) {
+              const base = a.fresh ? (sc.cursor ?? sc.stdoutBase) : sc.stdoutBase;
+              const result = await this.evaluateAssertion(a, responseText.slice(base), undefined, assertCtx);
+              sc.sink.push(result);
+              if (!result.passed) sc.stopped = true;
+            }
+            sc.cursor = responseText.length;
+          } else if (u.type === "repeat") {
+            const summary = await this.runRepeatUnit(u, async () => {
+              const iterScope: ExecScope = { stopped: false, sink: [], stdoutBase: responseText.length };
+              for (const c of u.children ?? []) {
+                if (iterScope.stopped) break;
+                await runUnit(c, iterScope, true);
+              }
+              return iterScope.sink.every((r) => r.passed)
+                ? { ok: true }
+                : { ok: false, why: this.scopeFailureWhy(iterScope) };
+            });
+            sc.sink.push(summary);
+            if (!summary.passed) sc.stopped = true;
+          }
+          // other step types can't run in a message-adapter flow — skipped
+        };
+
+        for (const u of flow.steps) {
+          if (scope.stopped) break;
+          await runUnit(u, scope);
         }
 
+        flowResult.response = responseText;
         flowResult.passed = flowResult.assertions.every((a) => a.passed);
       } catch (err) {
         flowResult.error = err instanceof Error ? err.message : String(err);
@@ -508,6 +610,70 @@ Examples:
     }
 
     return results;
+  }
+
+  /**
+   * Run a <repeat num="N" success="R"> block: `runIteration` executes the
+   * children once; the block passes when at least ceil(N·R) iterations
+   * succeed. A failed iteration does not stop the loop — that's the point
+   * (tolerance for flaky/non-deterministic parts). Exits early once the
+   * threshold can no longer be reached. Returns the summary assertion.
+   */
+  private async runRepeatUnit(
+    unit: ParsedStep,
+    runIteration: () => Promise<{ ok: boolean; why?: string }>,
+  ): Promise<AssertionResult> {
+    const num = unit.num ?? 1;
+    const rate = unit.success ?? 1;
+    const needed = Math.ceil(num * rate);
+    let ok = 0;
+    const failures: string[] = [];
+    for (let i = 0; i < num; i++) {
+      if (ok + (num - i) < needed) break;
+      console.log(`    repeat run ${i + 1}/${num} (${ok} ok, need ${needed})`);
+      try {
+        const r = await runIteration();
+        if (r.ok) ok++;
+        else failures.push(`run ${i + 1}: ${r.why ?? "failed"}`);
+      } catch (err) {
+        failures.push(`run ${i + 1}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    const passed = ok >= needed;
+    return {
+      that: "repeat",
+      value: `${num}× ≥${Math.round(rate * 100)}%`,
+      actual: `${ok}/${num}`,
+      passed,
+      description: unit.description,
+      repeat: { runs: num, succeeded: ok, needed, failures },
+    };
+  }
+
+  /** Nested <assert> children of a step — evaluate against that step's own
+   * output (and, for duration asserts, its wall-clock time). */
+  private async evalStepAsserts(
+    step: ParsedStep,
+    output: string,
+    scope: ExecScope,
+    ctx: { flowDir: string; env: Record<string, string>; flowName?: string },
+    exitCode?: number,
+    durationMs?: number,
+  ): Promise<void> {
+    for (const a of step.assertions ?? []) {
+      const r = await this.evaluateAssertion(a, output, exitCode, ctx, durationMs);
+      scope.sink.push(r);
+      if (!r.passed) scope.stopped = true;
+    }
+  }
+
+  /** Compact reason an iteration failed — the failed assertions inside it. */
+  private scopeFailureWhy(scope: ExecScope): string {
+    const why = scope.sink
+      .filter((r) => !r.passed)
+      .map((r) => `${r.that}=${r.value}${r.actual ? ` (${r.actual.slice(0, 80)})` : ""}`)
+      .join("; ");
+    return why || "failed";
   }
 
   private async runCustomAdapterFlow(flow: ParsedFlow): Promise<FlowResult> {
@@ -527,15 +693,34 @@ Examples:
       });
       let allStdout = "";
       let lastExitCode = 0;
-      let stopFlow = false;
+      const outerScope: ExecScope = { stopped: false, sink: flowResult.assertions, stdoutBase: 0 };
 
-      for (const step of flow.steps) {
-        if (stopFlow) break;
+      const processStep = async (step: ParsedStep, scope: ExecScope): Promise<void> => {
         if (step.type === "picture" || step.type === "video") {
           throw new Error(
             `<${step.type}> evidence requires a browser orchestrator (tsAdapter) — ` +
               `adapter '${step.adapter ?? "custom"}' steps cannot capture evidence`
           );
+        }
+        if (step.type === "extract") {
+          throw new Error(
+            `<extract> needs a browser page — use a tsAdapter flow with orchestrator= or runner="pw"`
+          );
+        }
+        if (step.type === "repeat") {
+          const summary = await this.runRepeatUnit(step, async () => {
+            const iterScope: ExecScope = { stopped: false, sink: [], stdoutBase: allStdout.length };
+            for (const child of step.children ?? []) {
+              if (iterScope.stopped) break;
+              await processStep(child, iterScope);
+            }
+            return iterScope.sink.every((r) => r.passed)
+              ? { ok: true }
+              : { ok: false, why: this.scopeFailureWhy(iterScope) };
+          });
+          scope.sink.push(summary);
+          if (!summary.passed) scope.stopped = true;
+          return;
         }
         if (
           (step.type === "script" &&
@@ -544,8 +729,15 @@ Examples:
             !this.servesMessage(step.adapter)) ||
           (step.type !== "script" && step.type !== "message" && step.type !== "assertions")
         ) {
+          const t0 = Date.now();
           const response = await this.runCustomAdapterStep(flow, step, env);
           allStdout += (allStdout ? "\n" : "") + response;
+          const assertCtx = {
+            flowDir: dirname(this._resolvedFilePath!),
+            env,
+            flowName: flow.name,
+          };
+          await this.evalStepAsserts(step, response, scope, assertCtx, 0, Date.now() - t0);
         } else if (step.type === "assertions") {
           const assertCtx = {
             flowDir: dirname(this._resolvedFilePath!),
@@ -553,11 +745,18 @@ Examples:
             flowName: flow.name,
           };
           for (const a of step.assertions ?? []) {
-            const result = await this.evaluateAssertion(a, allStdout, lastExitCode, assertCtx);
-            flowResult.assertions.push(result);
-            if (!result.passed) stopFlow = true;
+            const base = a.fresh ? (scope.cursor ?? scope.stdoutBase) : scope.stdoutBase;
+            const result = await this.evaluateAssertion(a, allStdout.slice(base), lastExitCode, assertCtx);
+            scope.sink.push(result);
+            if (!result.passed) scope.stopped = true;
           }
+          scope.cursor = allStdout.length;
         }
+      };
+
+      for (const step of flow.steps) {
+        if (outerScope.stopped) break;
+        await processStep(step, outerScope);
       }
 
       flowResult.response = allStdout;
@@ -644,7 +843,7 @@ Examples:
       // stops the flow (later steps are skipped).
       const units = flow.steps;
       // <video> children are steps too — flatten for the checks below.
-      const flatUnits = units.flatMap((u) => (u.type === "video" ? [u, ...(u.children ?? [])] : [u]));
+      const flatUnits = units.flatMap((u) => ((u.type === "video" || u.type === "repeat") ? [u, ...(u.children ?? [])] : [u]));
       const tsScriptSteps = flatUnits.filter((s) => s.type === "script" && (!s.adapter || s.adapter === "tsAdapter"));
       const hasMessageStep = flatUnits.some(
         (s) =>
@@ -693,15 +892,18 @@ Examples:
       let allStdout = "";
       let lastStderr = "";
       let lastExitCode = 0;
-      let stopFlow = false;
+      const outerScope: ExecScope = { stopped: false, sink: flowResult.assertions, stdoutBase: 0 };
 
-      const evalBlock = async (assertions: ParsedAssertion[]) => {
-        const assertCtx = { flowDir, env, flowName: flow.name };
+      const assertCtx = { flowDir, env, flowName: flow.name };
+
+      const evalBlock = async (assertions: ParsedAssertion[], scope: ExecScope) => {
         for (const a of assertions) {
-          const result = await this.evaluateAssertion(a, allStdout, lastExitCode, assertCtx);
-          flowResult.assertions.push(result);
-          if (!result.passed) stopFlow = true;
+          const base = a.fresh ? (scope.cursor ?? scope.stdoutBase) : scope.stdoutBase;
+          const result = await this.evaluateAssertion(a, allStdout.slice(base), lastExitCode, assertCtx);
+          scope.sink.push(result);
+          if (!result.passed) scope.stopped = true;
         }
+        scope.cursor = allStdout.length;
       };
 
       if (orchestrator) {
@@ -750,6 +952,27 @@ Examples:
           return scriptPath;
         };
 
+        /** <extract selector attr> — generated step reading a DOM element's
+         * text/attr on the live orchestrator page; the value lands in stdout
+         * so assertions and llm judges evaluate it like any step output. */
+        const extractScriptFor = (unit: ParsedStep): string => {
+          const dir = mkdtempSync(join(flowDir, ".axn-flow-"));
+          tmpDirs.push(dir);
+          const scriptPath = join(dir, "extract.ts");
+          const sel = JSON.stringify(unit.selector!);
+          const attr = unit.attr ?? "text";
+          const read =
+            attr === "text" ? "innerText()" :
+            attr === "html" ? "innerHTML()" :
+            attr === "value" ? "inputValue()" :
+            `getAttribute(${JSON.stringify(attr)})`;
+          writeFileSync(
+            scriptPath,
+            `export default async function extract(page: any) {\n  const v = await page.locator(${sel}).${read};\n  return typeof v === "string" ? v : (v ?? "");\n}\n`
+          );
+          return scriptPath;
+        };
+
         let batch: unknown[] = [];
         const flush = async () => {
           if (batch.length === 0) return;
@@ -771,50 +994,96 @@ Examples:
           }
         };
 
-        const processUnit = async (unit: ParsedStep, stepIndex: number): Promise<void> => {
+        const processUnit = async (unit: ParsedStep, stepIndex: number, scope: ExecScope): Promise<void> => {
           if (unit.type === "script" && (!unit.adapter || unit.adapter === "tsAdapter")) {
+            if (unit.assertions?.length) await flush();
+            const mark = allStdout.length;
+            const t0 = Date.now();
             const path = stepPathFor(unit);
             if (unit.args && Object.keys(unit.args).length > 0) {
               batch.push({ path, args: this.expandStepArgs(unit.args, env) });
             } else {
               batch.push(path);
             }
+            if (unit.assertions?.length) {
+              await flush();
+              await this.evalStepAsserts(unit, allStdout.slice(mark), scope, assertCtx, lastExitCode, Date.now() - t0);
+            }
           } else if (unit.type === "picture") {
+            if (unit.assertions?.length) await flush();
+            const mark = allStdout.length;
+            const t0 = Date.now();
             batch.push(captureScriptFor(unit, stepIndex));
+            if (unit.assertions?.length) {
+              await flush();
+              await this.evalStepAsserts(unit, allStdout.slice(mark), scope, assertCtx, lastExitCode, Date.now() - t0);
+            }
           } else if (unit.type === "video") {
             const videoName = unit.name ?? "video";
             videoStepIndex.set(videoName, stepIndex);
             batch.push({ __axnVideo: "start", name: videoName, dir: evidenceDir });
             for (const inner of unit.children ?? []) {
-              if (stopFlow) break;
-              await processUnit(inner, stepIndex);
+              if (scope.stopped) break;
+              await processUnit(inner, stepIndex, scope);
             }
             batch.push({ __axnVideo: "stop", name: videoName });
+          } else if (unit.type === "extract") {
+            if (unit.assertions?.length) await flush();
+            const mark = allStdout.length;
+            const t0 = Date.now();
+            batch.push(extractScriptFor(unit));
+            if (unit.assertions?.length) {
+              await flush();
+              await this.evalStepAsserts(unit, allStdout.slice(mark), scope, assertCtx, lastExitCode, Date.now() - t0);
+            }
+          } else if (unit.type === "repeat") {
+            await flush();
+            const summary = await this.runRepeatUnit(unit, async () => {
+              const iterScope: ExecScope = { stopped: false, sink: [], stdoutBase: allStdout.length };
+              for (const [j, child] of (unit.children ?? []).entries()) {
+                if (iterScope.stopped) break;
+                await processUnit(child, j, iterScope);
+              }
+              if (iterScope.stopped) {
+                batch = []; // drop scripts queued by the aborted iteration
+              } else {
+                await flush();
+              }
+              return iterScope.sink.every((r) => r.passed)
+                ? { ok: true }
+                : { ok: false, why: this.scopeFailureWhy(iterScope) };
+            });
+            scope.sink.push(summary);
+            if (!summary.passed) scope.stopped = true;
           } else if (unit.type === "assertions") {
             await flush();
-            await evalBlock(unit.assertions ?? []);
+            await evalBlock(unit.assertions ?? [], scope);
           } else if (unit.type === "message" || (unit.type === "script" && this.servesMessage(unit.adapter))) {
             await flush();
             const model = flow.models[0];
             if (!model) {
               throw new Error(`Flow '${flow.name}' has a message step but no <model> in <setup>`);
             }
+            const t0 = Date.now();
             const response = await this.runMessageStep(flow, unit, model, scenario, startedScenarios, infra, baseUrl, env, autoPort, portFlag);
             allStdout += (allStdout ? "\n" : "") + response;
+            await this.evalStepAsserts(unit, response, scope, assertCtx, 0, Date.now() - t0);
           } else {
             await flush();
+            const t0 = Date.now();
             const stdout = await this.runCustomAdapterStep(flow, unit, env);
             allStdout += (allStdout ? "\n" : "") + stdout;
             lastStderr = "";
             lastExitCode = 0;
+            await this.evalStepAsserts(unit, stdout, scope, assertCtx, 0, Date.now() - t0);
           }
         };
 
         for (const [i, unit] of units.entries()) {
-          if (stopFlow) break;
-          await processUnit(unit, i);
+          if (outerScope.stopped) break;
+          await processUnit(unit, i, outerScope);
         }
-        if (!stopFlow) await flush();
+        if (!outerScope.stopped) await flush();
 
         if (isFlowOverride) {
           await proc.stop();
@@ -827,9 +1096,9 @@ Examples:
           );
         }
 
-        for (const unit of units) {
-          if (stopFlow) break;
+        const processSeq = async (unit: ParsedStep, scope: ExecScope): Promise<void> => {
           if (unit.type === "script" && (!unit.adapter || unit.adapter === "tsAdapter")) {
+            const t0 = Date.now();
             const { stdout, stderr, exitCode } = await this.runTsScript(stepPathFor(unit), env, flowDir);
             allStdout += (allStdout ? "\n" : "") + stdout;
             lastStderr = stderr;
@@ -837,21 +1106,46 @@ Examples:
             if (exitCode !== 0) {
               throw new Error(`TS script exited with ${exitCode}: ${stderr || stdout}`);
             }
+            await this.evalStepAsserts(unit, stdout, scope, assertCtx, exitCode, Date.now() - t0);
           } else if (unit.type === "assertions") {
-            await evalBlock(unit.assertions ?? []);
+            await evalBlock(unit.assertions ?? [], scope);
+          } else if (unit.type === "extract") {
+            throw new Error(`<extract> needs a browser page — use a tsAdapter flow with orchestrator= or runner="pw"`);
+          } else if (unit.type === "repeat") {
+            const summary = await this.runRepeatUnit(unit, async () => {
+              const iterScope: ExecScope = { stopped: false, sink: [], stdoutBase: allStdout.length };
+              for (const child of unit.children ?? []) {
+                if (iterScope.stopped) break;
+                await processSeq(child, iterScope);
+              }
+              return iterScope.sink.every((r) => r.passed)
+                ? { ok: true }
+                : { ok: false, why: this.scopeFailureWhy(iterScope) };
+            });
+            scope.sink.push(summary);
+            if (!summary.passed) scope.stopped = true;
           } else if (unit.type === "message" || (unit.type === "script" && this.servesMessage(unit.adapter))) {
             const model = flow.models[0];
             if (!model) {
               throw new Error(`Flow '${flow.name}' has a message step but no <model> in <setup>`);
             }
+            const t0 = Date.now();
             const response = await this.runMessageStep(flow, unit, model, scenario, startedScenarios, infra, baseUrl, env, autoPort, portFlag);
             allStdout += (allStdout ? "\n" : "") + response;
+            await this.evalStepAsserts(unit, response, scope, assertCtx, 0, Date.now() - t0);
           } else {
+            const t0 = Date.now();
             const stdout = await this.runCustomAdapterStep(flow, unit, env);
             allStdout += (allStdout ? "\n" : "") + stdout;
             lastStderr = "";
             lastExitCode = 0;
+            await this.evalStepAsserts(unit, stdout, scope, assertCtx, 0, Date.now() - t0);
           }
+        };
+
+        for (const unit of units) {
+          if (outerScope.stopped) break;
+          await processSeq(unit, outerScope);
         }
       }
 
@@ -1166,19 +1460,25 @@ Examples:
       ...flow.env,
     } as Record<string, string>;
 
-    if (!isScenarioRunning(scenarioPath)) {
+    // Same rule as `axn-dev start`: with an explicit --port only the copy on that port counts as
+    // running — another port's copy may be a different checkout or branch.
+    const portProject =
+      portFlag !== null
+        ? getComposeProjectName(scenarioPath, { ...env, SCENARIO_PORT: String(portFlag) }) ?? undefined
+        : undefined;
+    if (!isScenarioRunning(scenarioPath, portProject)) {
       const startArgs = ["-s", scenario.name];
       if (autoPort) startArgs.push("--auto-port");
       if (portFlag !== null) {
         startArgs.push("--port", String(portFlag));
       }
-      await new StartCommand().execute(startArgs, { env: flow.env });
+      await new StartCommand().execute(startArgs, { env: expandFlowEnv(flow.env) });
       startedScenarios.add(scenario.name);
     } else {
       console.log(`\x1b[32mScenario '${scenario.name}' is already running\x1b[0m`);
     }
 
-    const runningPort = getRunningScenarioPort(scenarioPath);
+    const runningPort = portFlag ?? getRunningScenarioPort(scenarioPath);
     if (runningPort !== null) {
       env.SCENARIO_PORT = String(runningPort);
     }
@@ -1213,23 +1513,7 @@ Examples:
    * may reference other env vars; bounded to avoid infinite loops on cycles.
    */
   private expandEnvVars(env: Record<string, string>): Record<string, string> {
-    const result = { ...env };
-    const pattern = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g;
-    for (let pass = 0; pass < 10; pass++) {
-      let changed = false;
-      for (const key of Object.keys(result)) {
-        const expanded = result[key].replace(pattern, (match, name: string, def?: string) => {
-          if (name in result) {
-            changed = true;
-            return result[name];
-          }
-          return def !== undefined ? ((changed = true), def) : match;
-        });
-        if (expanded !== result[key]) result[key] = expanded;
-      }
-      if (!changed) break;
-    }
-    return result;
+    return expandEnvVars(env);
   }
 
   private async waitForReadiness(
@@ -1295,7 +1579,8 @@ Examples:
     assertion: ParsedAssertion,
     response: string,
     exitCode?: number,
-    ctx?: { flowDir: string; env: Record<string, string>; flowName?: string }
+    ctx?: { flowDir: string; env: Record<string, string>; flowName?: string },
+    durationMs?: number
   ): Promise<AssertionResult> {
     const result: AssertionResult = { that: assertion.that, value: assertion.value, passed: false };
 
@@ -1309,6 +1594,43 @@ Examples:
       );
       result.passed = outcome.passed;
       result.actual = outcome.detail;
+      return result;
+    }
+
+    if (assertion.that === "llm") {
+      const env = ctx?.env ?? this.expandEnvVars(process.env as Record<string, string>);
+      const outcome = await evaluateLlmAssertion(assertion, response, env);
+      result.passed = outcome.passed;
+      result.actual = outcome.actual;
+      return result;
+    }
+
+    if (assertion.that === "duration") {
+      const max = assertion.max ?? (assertion.value.trim() !== "" && !isNaN(Number(assertion.value)) ? Number(assertion.value) : undefined);
+      const min = assertion.min;
+      if (durationMs === undefined) {
+        result.passed = false;
+        result.actual = "no timing available";
+      } else {
+        result.actual = `${durationMs}ms`;
+        result.passed =
+          (min === undefined || durationMs >= min) &&
+          (max === undefined || durationMs <= max);
+      }
+      return result;
+    }
+
+    if (assertion.that === "script") {
+      const env = ctx?.env ?? this.expandEnvVars(process.env as Record<string, string>);
+      const flowDir = ctx?.flowDir ?? process.cwd();
+      const src = assertion.src ?? assertion.value;
+      const r = await this.runTsScript(
+        resolve(flowDir, src),
+        { ...env, AXN_OUTPUT: response, AXN_ASSERT: JSON.stringify(assertion) },
+        flowDir
+      );
+      result.passed = r.exitCode === 0;
+      result.actual = r.stdout.trim() || r.stderr.trim() || `exit ${r.exitCode}`;
       return result;
     }
 
@@ -1347,8 +1669,17 @@ Examples:
       if (r.error) console.log(`  error: ${r.error}`);
       for (const a of r.assertions) {
         const aStatus = a.passed ? "\x1b[32mPASS\x1b[0m" : "\x1b[31mFAIL\x1b[0m";
-        console.log(`  ${aStatus}  ${a.that}=${a.value}`);
+        const label = a.description ? `${a.description} — ` : "";
+        console.log(`  ${aStatus}  ${label}${a.that}=${a.value}`);
         if (a.actual) console.log(`      actual: ${a.actual}`);
+        if (a.repeat) {
+          for (const f of a.repeat.failures.slice(0, 10)) {
+            console.log(`      ${f}`);
+          }
+          if (a.repeat.failures.length > 10) {
+            console.log(`      … +${a.repeat.failures.length - 10} more failed runs`);
+          }
+        }
       }
     }
   }
