@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { expandEnvVars, expandFlowEnv } from "./env-expand.js";
+import { expandEnvVars, expandFlowEnv, expandStepArgs } from "./env-expand.js";
 
 describe("expandEnvVars", () => {
   it("expands references to other vars and defaults", () => {
@@ -44,5 +44,16 @@ describe("expandFlowEnv", () => {
       { HOME_DIR: "/h", SUBJECT: "shell", UNRELATED: "1" },
     );
     expect(env).toEqual({ ROOT: "/h/repo", SUBJECT: "shell" });
+  });
+});
+
+describe("expandStepArgs", () => {
+  it("expands step attributes against the flow env, with defaults", () => {
+    expect(
+      expandStepArgs(
+        { prompt: "${SUBJECT}", size: "${SIZE:-1024}", keep: "${NOPE}", plain: "x" },
+        { SUBJECT: "a red bicycle" },
+      ),
+    ).toEqual({ prompt: "a red bicycle", size: "1024", keep: "${NOPE}", plain: "x" });
   });
 });
