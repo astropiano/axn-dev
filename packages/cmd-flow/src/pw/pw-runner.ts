@@ -117,7 +117,7 @@ export async function runFlowWithPlaywright(opts: {
   writeFileSync(join(runDir, "flow.spec.js"), `import ${JSON.stringify(pathToFileURL(enginePath).href)};\n`);
   writeFileSync(
     join(runDir, "playwright.config.mjs"),
-    `export default { testDir: '.', timeout: 600000, reporter: [['json', { outputFile: 'result.json' }], ['list']], use: { headless: true, viewport: { width: 1280, height: 720 } } };\n`
+    `export default { testDir: '.', timeout: 600000, reporter: [['json', { outputFile: 'result.json' }], ['list']], use: { headless: true, viewport: { width: 1280, height: 720 }, actionTimeout: 30000, navigationTimeout: 30000 } };\n`
   );
 
   const resultFile = join(runDir, "result.json");
