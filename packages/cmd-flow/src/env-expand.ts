@@ -47,3 +47,21 @@ export function expandFlowEnv(
   const all = expandEnvVars({ ...(outer as Record<string, string>), ...flowEnv }, outer);
   return Object.fromEntries(Object.keys(flowEnv).map((k) => [k, all[k]]));
 }
+
+/**
+ * Expand ${VAR} / ${VAR:-default} references in step attributes against the flow's (already
+ * expanded) env. Unresolved references without a default are left as-is. Shared by both runners
+ * so a step sees the same arguments under `--runner axn` and `--runner pw`.
+ */
+export function expandStepArgs(
+  args: Record<string, string>,
+  env: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(args)) {
+    out[k] = v.replace(VAR_PATTERN, (m, name: string, def?: string) =>
+      name in env ? env[name] : def !== undefined ? def : m,
+    );
+  }
+  return out;
+}

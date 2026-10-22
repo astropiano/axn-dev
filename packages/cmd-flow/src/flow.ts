@@ -40,7 +40,7 @@ import { AdapterRegistry } from "./adapters/adapterRegistry.js";
 import { loadAxnDevConfig, configSection } from "@axn-dev/core";
 import { listFlowFiles } from "@axn-dev/flow-format";
 import { runFlowWithPlaywright } from "./pw/pw-runner.js";
-import { expandEnvVars, expandFlowEnv } from "./env-expand.js";
+import { expandEnvVars, expandFlowEnv, expandStepArgs } from "./env-expand.js";
 
 /**
  * Execution scope for a stretch of steps. The outer scope covers the whole
@@ -1431,14 +1431,7 @@ Examples:
     args: Record<string, string>,
     env: Record<string, string>
   ): Record<string, string> {
-    const pattern = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g;
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(args)) {
-      out[k] = v.replace(pattern, (m, name: string, def?: string) =>
-        name in env ? env[name] : def !== undefined ? def : m
-      );
-    }
-    return out;
+    return expandStepArgs(args, env);
   }
 
   private async prepareScenario(

@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import type { ParsedFlow, ParsedStep, FlowResult } from "@axn-dev/flow-format";
 import { evidenceDirFor } from "@axn-dev/flow-format";
+import { expandStepArgs } from "../env-expand.js";
 
 interface PwUnit {
   type: string;
@@ -40,6 +41,7 @@ function pwCliPath(): string {
 }
 
 function toUnit(step: ParsedStep, ctx: {
+  env: Record<string, string>;
   flowDir: string;
   runDir: string;
   adapterPathFor: (step: ParsedStep) => string | null;
@@ -48,7 +50,7 @@ function toUnit(step: ParsedStep, ctx: {
     type: step.type,
     description: step.description,
     value: step.value,
-    args: step.args,
+    args: step.args ? expandStepArgs(step.args, ctx.env) : undefined,
     adapter: step.adapter,
     name: step.name,
     selector: step.selector,
@@ -105,7 +107,7 @@ export async function runFlowWithPlaywright(opts: {
       : undefined,
     messageAdapter: flow.scenarios.find((s) => s.adapter)?.adapter,
     model: flow.models[0],
-    units: flow.steps.map((s) => toUnit(s, { flowDir, runDir, adapterPathFor })),
+    units: flow.steps.map((s) => toUnit(s, { env, flowDir, runDir, adapterPathFor })),
   };
 
   const payloadFile = join(runDir, "payload.json");
@@ -115,7 +117,7 @@ export async function runFlowWithPlaywright(opts: {
   writeFileSync(join(runDir, "flow.spec.js"), `import ${JSON.stringify(pathToFileURL(enginePath).href)};\n`);
   writeFileSync(
     join(runDir, "playwright.config.mjs"),
-    `export default { testDir: '.', timeout: 600000, reporter: [['json', { outputFile: 'result.json' }], ['list']], use: { headless: true, viewport: { width: 1280, height: 720 } } };\n`
+    `export default { testDir: '.', timeout: 600000, reporter: [['json', { outputFile: 'result.json' }], ['list']], use: { headless: true, viewport: { width: 1280, height: 720 }, actionTimeout: 30000, navigationTimeout: 30000 } };\n`
   );
 
   const resultFile = join(runDir, "result.json");
