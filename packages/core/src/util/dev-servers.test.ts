@@ -110,19 +110,35 @@ describe("dev-server lifecycle", () => {
     }
   }, 15000);
 
-  it("skips when a non-HTTP process owns the port", async () => {
+  it("fails when a non-HTTP process owns the port", async () => {
     const port = await freePort();
     const server = createTcpServer((sock) => sock.end());
     await new Promise<void>((r) => server.listen(port, "127.0.0.1", r));
     try {
       const s = scenario([{ label: "busy", command: "false", port }]);
-      await startDevServers(s, {}, config());
-      // nothing spawned — the bogus command would die instantly anyway
-      expect(true).toBe(true);
+      await expect(startDevServers(s, {}, config())).rejects.toThrow(
+        /dev-server busy:.*foreign process/,
+      );
     } finally {
       server.close();
     }
   }, 15000);
+
+  it("fails when the spawned command exits before answering", async () => {
+    const port = await freePort();
+    const cwd = mkdtempSync(join(tmpdir(), "devsrv-cwd-"));
+    const s = scenario([{ label: "doomed", command: "false", port }], cwd);
+    await expect(startDevServers(s, {}, config())).rejects.toThrow(
+      /dev-server doomed: exited early/,
+    );
+  }, 15000);
+
+  it("fails when the declared repo is not configured", async () => {
+    const s = scenario([{ label: "missing", command: "sleep 60" }]);
+    await expect(startDevServers(s, {}, config())).rejects.toThrow(
+      /dev-server missing: repo 'my-hardware' not found/,
+    );
+  });
 
   it("reuses a bare TCP listener when probe is 'tcp'", async () => {
     const port = await freePort();

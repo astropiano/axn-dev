@@ -6,9 +6,11 @@
 // Semantics:
 //  - start: a listener already answering HTTP on the port is *reused*
 //    (dashboards are device-agnostic thanks to ?control=); anything else
-//    occupying the port makes the entry get skipped with a warning. A free
-//    port spawns the command detached, pid + log under
-//    ~/.axn-dev/dev-servers/<hash>.{pid,log}.
+//    occupying the port fails the start — the declared server cannot run.
+//    A free port spawns the command detached, pid + log under
+//    ~/.axn-dev/dev-servers/<hash>.{pid,log}. Any failure (foreign port,
+//    missing repo, early exit, readiness timeout) propagates as an error
+//    so the caller's exit code reflects the dev-servers' health.
 //  - stop: only pids we spawned are killed (process group, SIGTERM).
 //    Reused servers are left running — someone else may be using them.
 
@@ -109,14 +111,21 @@ function repoPathFor(
 }
 
 /** Start every dev-server the scenario declares. Safe to call when some are
- * already running — those are reused, never double-spawned. */
+ * already running — those are reused, never double-spawned. Throws when any
+ * declared server fails to start so callers can reflect it in their exit
+ * code; servers that did come up stay running. */
 export async function startDevServers(
   scenario: ScenarioInfo,
   env: Record<string, string>,
   config: AxnDevConfig,
 ): Promise<void> {
+  const failures: string[] = [];
   for (const spec of scenario.devServers ?? []) {
-    await startOne(spec, scenario, env, config);
+    const failure = await startOne(spec, scenario, env, config);
+    if (failure !== null) failures.push(`dev-server ${spec.label}: ${failure}`);
+  }
+  if (failures.length > 0) {
+    throw new Error(failures.join("\n"));
   }
 }
 
@@ -129,12 +138,13 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/** Returns null on success (spawned or reused) or a failure reason. */
 async function startOne(
   spec: DevServerSpec,
   scenario: ScenarioInfo & { repoName?: string },
   env: Record<string, string>,
   config: AxnDevConfig,
-): Promise<void> {
+): Promise<string | null> {
   const label = spec.label;
 
   // A live pidfile means we spawned it earlier (restart reuses — aux servers
@@ -144,7 +154,7 @@ async function startOne(
     const pid = Number(readFileSync(file, "utf8").trim());
     if (pidAlive(pid)) {
       console.log(`  dev-server ${label}: already running (pid ${pid})`);
-      return;
+      return null;
     }
     rmSync(file, { force: true });
   }
@@ -153,17 +163,15 @@ async function startOne(
     if (!(await isPortFree(spec.port))) {
       if (await portAnswers(spec.port, spec.probe)) {
         console.log(`  dev-server ${label}: localhost:${spec.port} already running — reusing`);
-      } else {
-        console.log(`\x1b[33m  dev-server ${label}: port ${spec.port} in use by a foreign process — skipped\x1b[0m`);
+        return null;
       }
-      return;
+      return `port ${spec.port} in use by a foreign process`;
     }
   }
 
   const cwd = repoPathFor(spec, scenario, config);
   if (!cwd || !existsSync(cwd)) {
-    console.log(`\x1b[33m  dev-server ${label}: repo '${spec.repo ?? scenario.repoName}' not found — skipped\x1b[0m`);
-    return;
+    return `repo '${spec.repo ?? scenario.repoName}' not found`;
   }
 
   const childEnv: Record<string, string> = { ...process.env as Record<string, string> };
@@ -191,17 +199,17 @@ async function startOne(
     while (Date.now() < deadline) {
       if (await portAnswers(spec.port, spec.probe)) {
         console.log(`  dev-server ${label}: localhost:${spec.port} up`);
-        return;
+        return null;
       }
       if (child.exitCode !== null) {
-        console.log(`\x1b[33m  dev-server ${label}: exited early (code ${child.exitCode}) — see log\x1b[0m`);
         rmSync(pidFile(scenario.path, label), { force: true });
-        return;
+        return `exited early (code ${child.exitCode}) — see ${logFile(scenario.path, label)}`;
       }
       await new Promise((r) => setTimeout(r, READY_POLL_MS));
     }
-    console.log(`\x1b[33m  dev-server ${label}: port ${spec.port} not answering after ${READY_TIMEOUT_MS / 1000}s — still starting?\x1b[0m`);
+    return `port ${spec.port} not answering after ${READY_TIMEOUT_MS / 1000}s (log: ${logFile(scenario.path, label)})`;
   }
+  return null;
 }
 
 /** Kill the dev-servers this scenario spawned (pidfiles we wrote). Servers

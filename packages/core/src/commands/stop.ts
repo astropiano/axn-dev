@@ -190,5 +190,8 @@ Examples:
     if (exitCode !== 0) {
       throw new Error(`docker compose exited with code ${exitCode}`);
     }
+
+    // Dev servers this scenario spawned die with it; reused ones stay up.
+    stopDevServers(scenario);
   }
 }

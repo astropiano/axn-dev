@@ -224,7 +224,12 @@ async function performScenarioStart(
       ...(driver.urlEnv?.(scenario) ?? {}),
       ...devServerUrlEnv(scenario.devServers ?? []),
     };
-    await startDevServers(scenario, endpointEnv, axnConfig);
+    try {
+      await startDevServers(scenario, endpointEnv, axnConfig);
+    } catch (err) {
+      runs.fail(runId, err instanceof Error ? err.message : String(err));
+      return;
+    }
 
     // Register the instance so the dashboard can iframe the driver's
     // endpoints. Only web endpoints are offered (fwd hints like
@@ -355,10 +360,28 @@ async function performScenarioStart(
     return;
   }
 
+  // Auxiliary dev servers declared in axn-dev.yaml — same as `axn-dev start`.
+  if ((scenario.devServers ?? []).length > 0) {
+    runs.update(runId, { phase: "dev servers" });
+    try {
+      await startDevServers(
+        scenario,
+        { ...effectiveEnv, ...devServerUrlEnv(scenario.devServers ?? []) },
+        axnConfig,
+      );
+    } catch (err) {
+      runs.fail(runId, err instanceof Error ? err.message : String(err));
+      return;
+    }
+  }
+
   const frontendMap = scenario.frontendServices ?? scenario.proxies;
   if (frontendMap) {
     const instanceId = randomUUID();
-    const endpointMap = resolveEndpoints(frontendMap, effectiveEnv);
+    const endpointMap = resolveEndpoints(frontendMap, {
+      ...effectiveEnv,
+      ...devServerUrlEnv(scenario.devServers ?? []),
+    });
     const proxyMap: Record<string, number> = {};
     const urlMap: Record<string, string> = {};
     for (const [name, ep] of Object.entries(endpointMap)) {
@@ -478,6 +501,9 @@ export async function handleStopScenario(ctx: ServeContext, req: IncomingMessage
     res.end(JSON.stringify({ error: "docker-compose down failed" }));
     return;
   }
+
+  // Dev servers this scenario spawned die with it; reused ones stay up.
+  stopDevServers(scenario);
 
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ success: true, scenario: scenarioName }));

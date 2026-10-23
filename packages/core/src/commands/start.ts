@@ -258,7 +258,7 @@ Examples:
         );
         if (!confirmed) {
           console.log("Aborted.");
-          return;
+          process.exit(1);
         }
       }
       console.log("\x1b[33mCleaning scenario (removing volumes)...\x1b[0m\n");
@@ -414,6 +414,12 @@ Examples:
       throw new Error(`docker compose exited with code ${exitCode}`);
     }
 
+    // Auxiliary dev servers declared in axn-dev.yaml — a failure fails the
+    // start (the compose stack stays up; `stop` tears it down again).
+    const devServerEnv = devServerUrlEnv(scenario.devServers ?? []);
+    const endpointEnv = { ...effectiveEnv, ...devServerEnv };
+    await startDevServers(scenario, endpointEnv, axnConfig);
+
     // In detached mode, print service URLs
     if (!foreground) {
       console.log("");
@@ -421,13 +427,13 @@ Examples:
 
       const frontendMap = scenario.frontendServices ?? scenario.proxies;
       if (frontendMap && Object.keys(frontendMap).length > 0) {
-        const friendly = resolveEndpoints(frontendMap, effectiveEnv);
+        const friendly = resolveEndpoints(frontendMap, endpointEnv);
         const maxName = Math.max(...Object.keys(friendly).map((n) => n.length));
         for (const [name, ep] of Object.entries(friendly).sort(([a], [b]) => a.localeCompare(b))) {
           console.log(`  ${name.padEnd(maxName)}  ${ep.url}`);
         }
       } else {
-        const endpoints = getServiceEndpoints(scenario.path, effectiveEnv);
+        const endpoints = getServiceEndpoints(scenario.path, endpointEnv);
         const maxName = Math.max(...endpoints.map(e => e.service.length), 0);
         for (const ep of endpoints) {
           console.log(`  ${ep.service.padEnd(maxName)}  ${ep.url}`);

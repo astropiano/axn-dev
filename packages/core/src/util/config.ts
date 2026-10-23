@@ -61,7 +61,7 @@ export interface DevServerSpec {
   /** Shell command run from the repo root (e.g. "pnpm nx serve sim"). */
   command: string;
   /** Port the server binds. A listener already answering is reused, not
-   * replaced; a foreign occupant makes the server get skipped. Omit for
+   * replaced; a foreign occupant fails the start. Omit for
    * daemons that bind no port (pidfile liveness still prevents
    * double-spawns). */
   port?: number;

@@ -11,7 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "typecheck": "tsc -b --emitDeclarationOnly false --noEmit",
+    "typecheck": "tsc -b --force",
     "lint": "eslint packages/*/src/",
     "clean": "tsc -b --clean && rm -rf packages/*/dist",
     "version:sync": "node scripts/set-version.mjs",
