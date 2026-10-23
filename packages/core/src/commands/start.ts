@@ -340,7 +340,7 @@ Examples:
       for (const key of Object.keys(overrideEnv)) delete stickyEnv[key];
 
       console.log("\x1b[33mScenario already running — restarting...\x1b[0m\n");
-      const downEnv = { ...overrideEnv, ...(scenario.env ?? {}), ...(scenarioPort !== null ? { SCENARIO_PORT: String(scenarioPort) } : {}) };
+      const downEnv = { ...(scenario.env ?? {}), ...overrideEnv, ...(scenarioPort !== null ? { SCENARIO_PORT: String(scenarioPort) } : {}) };
       const downCode = await runCompose({
         scenarioPath: scenario.path,
         reposRoot: scenario.path,
@@ -365,8 +365,8 @@ Examples:
       : {};
     const effectiveEnv = { ...composeEnv, ...autoPortEnv };
     const startEnv: Record<string, string> = {
-      ...overrideEnv,
       ...(scenario.env ?? {}),
+      ...overrideEnv,
       ...(scenarioPort !== null ? { SCENARIO_PORT: String(scenarioPort) } : {}),
       ...autoPortEnv,
     };
