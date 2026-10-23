@@ -26,6 +26,14 @@ Each `repos` entry injects `<NAME>_ROOT` (or `<env>_ROOT` when the object
 form's `env` stem is given) into the scenario environment — see
 link:env-vars.adoc[Environment Variables].
 
+The `repos` *key* is also the checkout's identity: it seeds the repo part
+of derived compose project names (worktree checkouts resolve through their
+main checkout's path). Registering two checkouts of the same remote — e.g.
+a GitHub mirror as `myapp-github` — gives them distinct project names, so
+their stacks run side by side. Precedence for the name seed:
+`project-name:` in the checkout's own `.axn-dev/config.yaml`, then the
+`repos` key, then the remote-derived canonical name.
+
 === Config resolution
 
 1. Project-local: `<git-root>/.axn-dev/config.yaml`

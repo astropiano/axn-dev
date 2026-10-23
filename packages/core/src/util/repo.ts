@@ -360,6 +360,25 @@ export function discoverScenarios(ctx: RepoContext, dirNames?: string[]): Scenar
   return scenarios;
 }
 
+/** The name a repo checkout is registered under in the workspace config
+ * (`repos:` keys), or null when unregistered. Worktree checkouts resolve
+ * through their main checkout's registered path. Two checkouts of the same
+ * remote (e.g. a public mirror registered as `axn-dev-github`) get distinct
+ * names — this is the seed for compose project names. */
+export function registeredRepoName(repoRoot: string): string | null {
+  const { repos } = loadAxnDevConfig(repoRoot);
+  const hit = (p: string) => {
+    for (const [name, dir] of Object.entries(repos)) {
+      if (resolve(dir) === resolve(p)) return name;
+    }
+    return null;
+  };
+  return hit(repoRoot) ?? (() => {
+    const main = getWorktreeInfo(repoRoot).mainWorktree?.path;
+    return main ? hit(main) : null;
+  })();
+}
+
 /** Repo-less scenario root: when the cwd is not inside a repo, a directory
  * can still own scenarios — via its own `.axn-dev/config.yaml`
  * `scenarios.roots` or just a `scenarios/` subdir. Returns a synthetic

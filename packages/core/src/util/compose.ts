@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { load as loadYaml } from "js-yaml";
 import { basename, join } from "node:path";
 import { getCanonicalRepoName, getWorktreeInfo, getWorktreeInfoAsync } from "./worktree.js";
+import { registeredRepoName } from "./repo.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -256,7 +257,7 @@ export function getComposeProjectName(scenarioPath: string, env?: Record<string,
     return null;
   }
 
-  const repoName = getCanonicalRepoName(repoRoot);
+  const repoName = registeredRepoName(repoRoot) ?? getCanonicalRepoName(repoRoot);
   const scenario = basename(scenarioPath);
 
   const { worktrees } = getWorktreeInfo(repoRoot);
@@ -301,7 +302,7 @@ export async function getComposeProjectNameAsync(scenarioPath: string, env?: Rec
     return null;
   }
 
-  const repoName = getCanonicalRepoName(repoRoot);
+  const repoName = registeredRepoName(repoRoot) ?? getCanonicalRepoName(repoRoot);
   const scenario = basename(scenarioPath);
 
   const { worktrees } = await getWorktreeInfoAsync(repoRoot);
