@@ -1,6 +1,7 @@
 import { spawn, execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { load as loadYaml } from "js-yaml";
 import { basename, join } from "node:path";
 import { getCanonicalRepoName, getWorktreeInfo, getWorktreeInfoAsync } from "./worktree.js";
 
@@ -223,6 +224,26 @@ function slugify(text: string | null): string {
     .replace(/^-|-$/g, "");
 }
 
+
+/**
+ * Optional repo-local override for the derived compose project name:
+ * `<repoRoot>/.axn-dev/config.yaml` with a `project-name:` key. Lets two
+ * checkouts of the same repo (or mirrored public/internal clones, which
+ * share the repo directory name) run stacks side by side without
+ * colliding on compose project, network and per-user container names.
+ */
+function getProjectNameOverride(repoRoot: string): string | null {
+  const cfg = join(repoRoot, ".axn-dev", "config.yaml");
+  if (!existsSync(cfg)) return null;
+  try {
+    const parsed = loadYaml(readFileSync(cfg, "utf-8")) as Record<string, unknown> | null;
+    const name = parsed?.["project-name"];
+    return typeof name === "string" && name.trim() ? name.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getComposeProjectName(scenarioPath: string, env?: Record<string, string>): string | null {
   let repoRoot: string;
   try {
@@ -261,7 +282,8 @@ export function getComposeProjectName(scenarioPath: string, env?: Record<string,
   if (!branchSlug) return null;
 
   const portSuffix = env?.SCENARIO_PORT ? `-${env.SCENARIO_PORT}` : "";
-  return `axn-${repoName}-${scenario}-${branchSlug}${portSuffix}`;
+  const override = getProjectNameOverride(repoRoot);
+  return `${override ?? `axn-${repoName}-${scenario}-${branchSlug}`}${portSuffix}`;
 }
 
 /** Async variant of getComposeProjectName — used by runCompose so serve
@@ -305,7 +327,8 @@ export async function getComposeProjectNameAsync(scenarioPath: string, env?: Rec
   if (!branchSlug) return null;
 
   const portSuffix = env?.SCENARIO_PORT ? `-${env.SCENARIO_PORT}` : "";
-  return `axn-${repoName}-${scenario}-${branchSlug}${portSuffix}`;
+  const override = getProjectNameOverride(repoRoot);
+  return `${override ?? `axn-${repoName}-${scenario}-${branchSlug}`}${portSuffix}`;
 }
 
 /**
