@@ -11,7 +11,7 @@ import { StartCommand } from "@axn-dev/core";
 import { StopCommand } from "@axn-dev/core";
 import { CleanCommand } from "@axn-dev/core";
 import { ScenarioDiscoveryService, resolveDeviceEnv } from "@axn-dev/core";
-import { getComposeProjectName, getServiceEndpoints, getRunningScenarioPort, isScenarioRunning, resolveEndpoints, type ServiceEndpoint } from "@axn-dev/core";
+import { getComposeProjectName, getServiceEndpoints, getRunningScenarioPort, isScenarioRunning, resolveEndpoints, substituteEnvVars, type ServiceEndpoint } from "@axn-dev/core";
 import { loadWorkspaceConfig, parseYaml } from "@axn-dev/core";
 import {
   flowAdapter,
@@ -64,7 +64,7 @@ const FLOW_FLAGS = [
   "--file", "-f", "--model", "-m", "--filter", "-t", "--suite",
   "--no-stop", "--no-build", "--clean-start", "--manual", "--adapter",
   "--report", "--report-format", "--scenario", "-s", "--project", "-p",
-  "--infra", "-i", "--global", "-g", "--workbase", "--auto-port",
+  "--infra", "-i", "--base-url", "--global", "-g", "--workbase", "--auto-port",
   "--port", "--pwd", "-c", "--yes", "-y", "-B", "--runner", "--help", "-h",
 ];
 
@@ -102,6 +102,10 @@ Options:
   -m, --model <model>     Run only the specified model (e.g. llama3.1:latest)
   -t, --filter <name>     Run only flows whose name contains the given string
   -i, --infra <device>    Run the flow against a deployed device (tsAdapter only)
+  --base-url <url>        Run the flow against an already-deployed base URL —
+                          any deployment (k8s, VM, …); no scenario is started.
+                          Overrides url= on <scenario>; applies to all
+                          scenarios in the run. env gets BASE_URL=<url>.
   -p, --port <port>       Single-port scenario: override the SCENARIO_PORT
   --auto-port             Resolve port conflicts by picking a free port from the configured range
   --adapter <name=path>   Register a custom adapter for this run (overrides config)
@@ -205,6 +209,8 @@ Examples:
   axn-dev flow -f flows/example.xml -m llama3.1:latest
   axn-dev flow -f flows/example.xml -t "app loads"
   axn-dev flow -f flows/example.xml -t "app loads" --manual
+  axn-dev flow -f flows/example.xml --base-url https://staging.example.com
+  # or pin the deployment in XML: <scenario name="staging" url="https://…" adapter="…"/>
 `;
   }
 
@@ -223,6 +229,7 @@ Examples:
     let modelFilter: string | null = null;
     let flowFilter: string | null = null;
     let infra: string | null = null;
+    let baseUrlFlag: string | null = null;
     const adapterOverrides: Record<string, string> = {};
     let autoPort = false;
     let portFlag: number | null = null;
@@ -245,6 +252,16 @@ Examples:
       } else if (arg === "-i" || arg === "--infra") {
         infra = args[++i];
         if (!infra) throw new Error("--infra requires a value");
+      } else if (arg === "--base-url") {
+        const value = args[++i];
+        if (!value) throw new Error("--base-url requires a value");
+        try {
+          const proto = new URL(value).protocol;
+          if (proto !== "http:" && proto !== "https:") throw new Error();
+        } catch {
+          throw new Error("--base-url requires an http(s) URL");
+        }
+        baseUrlFlag = value.replace(/\/+$/, "");
       } else if (arg === "--runner") {
         this.runnerMode = normalizeRunnerName(args[++i]) ?? null;
         if (!this.runnerMode) throw new Error("--runner requires a value");
@@ -285,6 +302,13 @@ Examples:
       throw new Error("--file is required. Run 'axn-dev flow --help' for examples.");
     }
 
+    if (baseUrlFlag) {
+      if (infra) throw new Error("--base-url cannot be combined with --infra");
+      if (cleanStart) throw new Error("--base-url cannot be combined with --clean-start (deployment targets have no local volumes)");
+      if (portFlag !== null) throw new Error("--base-url cannot be combined with --port");
+      if (autoPort) throw new Error("--base-url cannot be combined with --auto-port");
+    }
+
     const axnConfig = loadAxnDevConfig();
     this.adapterRegistry = new AdapterRegistry(
       configSection<Record<string, string>>(axnConfig, "adapters") ?? {},
@@ -301,6 +325,8 @@ Examples:
       throw new Error(`No flows matched filter '${flowFilter}'`);
     }
 
+    this.warnForDeployments(selectedFlows, { infra, baseUrlFlag, portFlag, autoPort, stopAfter });
+
     if (manual) {
       if (selectedFlows.length > 1) {
         throw new Error("--manual requires a single flow; use -t to select one");
@@ -316,12 +342,16 @@ Examples:
       const startedScenarios = new Set<string>();
 
       try {
-        if (flow.scenarios.length > 0) {
+        // Deployment-targeted scenarios (url= or --base-url) need no start.
+        const localScenarios = flow.scenarios.filter(
+          (s) => !this.deploymentUrl(s, flow, baseUrlFlag)
+        );
+        if (localScenarios.length > 0) {
           const startScenario = await this.confirm(
             `Start scenario(s) automatically for manual run? [y/N] `
           );
           if (startScenario) {
-            for (const scenario of flow.scenarios) {
+            for (const scenario of localScenarios) {
               await this.prepareScenario(scenario, flow, startedScenarios, autoPort, portFlag);
               console.log(`Scenario '${scenario.name}' is ready.`);
             }
@@ -357,7 +387,8 @@ Examples:
       const scenarioNames = new Set<string>();
       for (const flow of selectedFlows) {
         for (const scenario of flow.scenarios) {
-          scenarioNames.add(scenario.name);
+          // Deployment targets have no local volumes to wipe.
+          if (!this.deploymentUrl(scenario, flow, null)) scenarioNames.add(scenario.name);
         }
       }
       if (scenarioNames.size > 0 && !yes) {
@@ -379,7 +410,7 @@ Examples:
 
     try {
       for (const flow of selectedFlows) {
-        const flowResults = await this.runFlow(flow, modelFilter, startedScenarios, infra, autoPort, portFlag);
+        const flowResults = await this.runFlow(flow, modelFilter, startedScenarios, infra, autoPort, portFlag, baseUrlFlag);
         results.push(...flowResults);
       }
     } finally {
@@ -476,11 +507,19 @@ Examples:
     startedScenarios: Set<string>,
     infra: string | null = null,
     autoPort = false,
-    portFlag: number | null = null
+    portFlag: number | null = null,
+    deployUrl: string | null = null
   ): Promise<FlowResult[]> {
-    const tsScenario = flow.scenarios.find((s) => s.adapter === "tsAdapter");
+    // Scenario-less flow with an explicit deployment target — a synthetic
+    // tsAdapter scenario carries the URL; orchestrator/readiness can come
+    // from the <flow> attributes.
+    const tsScenario =
+      flow.scenarios.find((s) => s.adapter === "tsAdapter") ??
+      (flow.scenarios.length === 0 && (deployUrl ?? flow.baseUrl)
+        ? { name: "deployment", service: "", adapter: "tsAdapter", readiness: [] }
+        : undefined);
     if (tsScenario) {
-      return [await this.runTsAdapterFlow(flow, tsScenario, startedScenarios, infra, autoPort, portFlag)];
+      return [await this.runTsAdapterFlow(flow, tsScenario, startedScenarios, infra, autoPort, portFlag, deployUrl)];
     }
 
     const isCustomUnit = (s: ParsedStep) =>
@@ -496,7 +535,14 @@ Examples:
       (s) => isCustomUnit(s) || (s.children ?? []).some(isCustomUnit)
     );
     if (hasCustomAdapterStep) {
-      return [await this.runCustomAdapterFlow(flow)];
+      // Custom-adapter steps get BASE_URL when the run targets a deployment.
+      // The stub lookup also resolves a scenario-less <flow base-url>.
+      const target =
+        flow.scenarios
+          .map((s) => this.deploymentUrl(s, flow, deployUrl))
+          .find((u): u is string => u !== null) ??
+        this.deploymentUrl({ name: flow.name } as ParsedScenario, flow, null);
+      return [await this.runCustomAdapterFlow(flow, target)];
     }
 
     if (infra) {
@@ -520,7 +566,8 @@ Examples:
       throw new Error(
         `Flow '${flow.name}' has no scenario adapter serving <usermessage>. ` +
           `Registered: ${serving.join(", ") || "(none)"}. ` +
-          `Install a plugin package declaring one via axn-dev.flowAdapters.`,
+          `Install a plugin package declaring one via axn-dev.flowAdapters, ` +
+          `or set adapter= on the <usermessage>/<scenario>.`,
       );
     }
 
@@ -569,7 +616,7 @@ Examples:
           }
           if (u.type === "message") {
             const t0 = Date.now();
-            const r = await this.runMessageStep(flow, u, model, activeScenario, startedScenarios, null, undefined, undefined, autoPort, portFlag);
+            const r = await this.runMessageStep(flow, u, model, activeScenario, startedScenarios, null, undefined, undefined, autoPort, portFlag, deployUrl);
             responseText += (responseText ? "\n" : "") + r;
             await this.evalStepAsserts(u, r, sc, assertCtx, 0, Date.now() - t0);
           } else if (u.type === "assertions") {
@@ -679,7 +726,10 @@ Examples:
     return why || "failed";
   }
 
-  private async runCustomAdapterFlow(flow: ParsedFlow): Promise<FlowResult> {
+  private async runCustomAdapterFlow(
+    flow: ParsedFlow,
+    deployUrl: string | null = null,
+  ): Promise<FlowResult> {
     const start = Date.now();
     const flowResult: FlowResult = {
       flow: flow.name,
@@ -693,6 +743,7 @@ Examples:
       const env: Record<string, string> = this.expandEnvVars({
         ...(process.env as Record<string, string>),
         ...flow.env,
+        ...(deployUrl ? this.deploymentEnv(deployUrl) : {}),
       });
       let allStdout = "";
       let lastExitCode = 0;
@@ -781,7 +832,8 @@ Examples:
     startedScenarios: Set<string>,
     infra: string | null = null,
     autoPort = false,
-    portFlag: number | null = null
+    portFlag: number | null = null,
+    deployUrl: string | null = null
   ): Promise<FlowResult> {
     const start = Date.now();
     const flowResult: FlowResult = {
@@ -799,11 +851,25 @@ Examples:
       let baseUrl: string;
       let env: Record<string, string>;
 
+      // -i targets a device — deployment urls are never consulted, not even
+      // for validation (an unresolved ${VAR} there must not fail the run).
+      const deploymentUrl = infra ? null : this.deploymentUrl(scenario, flow, deployUrl);
       if (infra) {
         const deviceEnv = await this.buildDeviceEnv(infra);
         baseUrl = deviceEnv.BASE_URL;
         await this.waitForProbe(baseUrl, "GET", "ok", 120000);
         env = this.expandEnvVars({ ...deviceEnv, ...flow.env });
+      } else if (deploymentUrl) {
+        // Deployment target — no scenario lifecycle; BASE_URL is the
+        // deployment's URL, declared <readiness> probes address it directly.
+        baseUrl = deploymentUrl;
+        console.log(`\x1b[32mTarget deployment: ${baseUrl}\x1b[0m`);
+        await this.waitForDeploymentReadiness(scenario, baseUrl);
+        env = this.expandEnvVars({
+          ...(process.env as Record<string, string>),
+          ...flow.env,
+          ...this.deploymentEnv(baseUrl),
+        });
       } else {
         const prepared = await this.prepareScenario(scenario, flow, startedScenarios, autoPort, portFlag);
         baseUrl = prepared.baseUrl;
@@ -1068,7 +1134,7 @@ Examples:
               throw new Error(`Flow '${flow.name}' has a message step but no <model> in <setup>`);
             }
             const t0 = Date.now();
-            const response = await this.runMessageStep(flow, unit, model, scenario, startedScenarios, infra, baseUrl, env, autoPort, portFlag);
+            const response = await this.runMessageStep(flow, unit, model, scenario, startedScenarios, infra, baseUrl, env, autoPort, portFlag, deploymentUrl);
             allStdout += (allStdout ? "\n" : "") + response;
             await this.evalStepAsserts(unit, response, scope, assertCtx, 0, Date.now() - t0);
           } else {
@@ -1133,7 +1199,7 @@ Examples:
               throw new Error(`Flow '${flow.name}' has a message step but no <model> in <setup>`);
             }
             const t0 = Date.now();
-            const response = await this.runMessageStep(flow, unit, model, scenario, startedScenarios, infra, baseUrl, env, autoPort, portFlag);
+            const response = await this.runMessageStep(flow, unit, model, scenario, startedScenarios, infra, baseUrl, env, autoPort, portFlag, deploymentUrl);
             allStdout += (allStdout ? "\n" : "") + response;
             await this.evalStepAsserts(unit, response, scope, assertCtx, 0, Date.now() - t0);
           } else {
@@ -1189,6 +1255,107 @@ Examples:
       );
     }
     return { ...(process.env as Record<string, string>), ...resolved };
+  }
+
+  /** Warn once per scenario about flag/attribute combinations that are
+   * accepted but ignored or surprising — runs before any flow executes so
+   * dead config is visible up front. */
+  private warnForDeployments(
+    flows: ParsedFlow[],
+    opts: {
+      infra: string | null;
+      baseUrlFlag: string | null;
+      portFlag: number | null;
+      autoPort: boolean;
+      stopAfter: boolean;
+    },
+  ): void {
+    const warn = (msg: string) => console.log(`\x1b[33mWarning: ${msg}\x1b[0m`);
+    if (opts.infra) {
+      if (opts.portFlag !== null) warn("--port has no effect with --infra");
+      if (opts.autoPort) warn("--auto-port has no effect with --infra");
+    }
+    if (opts.baseUrlFlag && !opts.stopAfter) {
+      warn("--no-stop has no effect with --base-url — nothing is started");
+    }
+    const warned = new Set<string>();
+    for (const flow of flows) {
+      for (const scenario of flow.scenarios) {
+        const url = this.deploymentUrlRaw(scenario, flow, opts.baseUrlFlag);
+        if (!url || warned.has(scenario.name)) continue;
+        warned.add(scenario.name);
+        if (opts.infra) {
+          warn(`scenario '${scenario.name}': deployment url is ignored — --infra targets a device`);
+          continue;
+        }
+        if (scenario.service) {
+          warn(`scenario '${scenario.name}': 'service' is ignored for deployment targets`);
+        }
+        if (scenario.readiness.some((r) => r.service || r.port)) {
+          warn(`scenario '${scenario.name}': readiness service=/port= are ignored for deployment targets`);
+        }
+        if (opts.portFlag !== null) {
+          warn(`--port has no effect on deployment target '${scenario.name}'`);
+        }
+        if (opts.autoPort) {
+          warn(`--auto-port has no effect on deployment target '${scenario.name}'`);
+        }
+        try {
+          if (flow.env.SCENARIO_PORT && !new URL(url).port) {
+            warn(`flow '${flow.name}': SCENARIO_PORT in <env> is kept, but the deployment URL has no explicit port`);
+          }
+        } catch { /* invalid url — the run reports it */ }
+      }
+    }
+  }
+
+  /** The deployment URL a scenario would target, without validating it —
+   * null when the scenario uses the local lifecycle. Used to classify
+   * scenarios (warnings, skip-lists) without failing on a bad value. */
+  private deploymentUrlRaw(
+    scenario: ParsedScenario,
+    flow: ParsedFlow,
+    override: string | null,
+  ): string | null {
+    const raw = override ?? scenario.url ?? flow.baseUrl;
+    if (!raw) return null;
+    return substituteEnvVars(raw, {
+      ...(process.env as Record<string, string>),
+      ...flow.env,
+    }).replace(/\/+$/, "");
+  }
+
+  /** Resolve an explicit deployment URL for the scenario — --base-url wins
+   * over url= which wins over <flow base-url>; ${VAR} references expand
+   * against process + flow env. Returns null when the scenario uses the
+   * local lifecycle. Throws on anything that is not an http(s) URL. */
+  private deploymentUrl(
+    scenario: ParsedScenario,
+    flow: ParsedFlow,
+    override: string | null,
+  ): string | null {
+    const raw = override ?? scenario.url ?? flow.baseUrl;
+    const url = this.deploymentUrlRaw(scenario, flow, override);
+    if (!url) return null;
+    try {
+      const proto = new URL(url).protocol;
+      if (proto !== "http:" && proto !== "https:") throw new Error();
+    } catch {
+      throw new Error(
+        `Scenario '${scenario.name}': deployment url '${url}' is not a valid http(s) URL` +
+          (raw !== url ? ` (expanded from '${raw}')` : ""),
+      );
+    }
+    return url;
+  }
+
+  /** env a deployment target exposes to steps — BASE_URL, plus SCENARIO_PORT
+   * when the URL carries an explicit port (flows use it for sibling URLs). */
+  private deploymentEnv(baseUrl: string): Record<string, string> {
+    const env: Record<string, string> = { BASE_URL: baseUrl };
+    const port = new URL(baseUrl).port;
+    if (port) env.SCENARIO_PORT = port;
+    return env;
   }
 
   private resolveTsx(): string {
@@ -1387,7 +1554,8 @@ Examples:
     deviceBaseUrl?: string,
     env?: Record<string, string>,
     autoPort = false,
-    portFlag: number | null = null
+    portFlag: number | null = null,
+    deployUrl: string | null = null
   ): Promise<string> {
     const adapterName = step.adapter ?? scenario.adapter;
     const spec = adapterName
@@ -1398,18 +1566,32 @@ Examples:
       const serving = flowAdaptersForTag("usermessage").map((s) => s.name);
       throw new Error(
         `Message step in flow '${flow.name}' has no usable adapter ` +
-          `(registered <usermessage> adapters: ${serving.join(", ") || "(none)"})`,
+          `(registered <usermessage> adapters: ${serving.join(", ") || "(none)"}) — ` +
+          `set adapter= on the <usermessage> or the <scenario>`,
       );
     }
 
     let stepEnv =
       env ?? this.expandEnvVars({ ...(process.env as Record<string, string>), ...flow.env });
     let baseUrl: string | undefined;
+    // -i targets a device — deployment urls are never consulted, not even
+    // for validation.
+    const deploymentUrl = infra ? null : this.deploymentUrl(scenario, flow, deployUrl);
 
     if (infra) {
       const deviceEnv = await this.buildDeviceEnv(infra);
       stepEnv = this.expandEnvVars({ ...deviceEnv, ...flow.env });
       baseUrl = deviceBaseUrl ?? deviceEnv.BASE_URL;
+    } else if (deploymentUrl) {
+      // Deployment target — no scenario lifecycle; BASE_URL is the
+      // deployment's URL (url= attribute or --base-url).
+      const target = deviceBaseUrl ?? deploymentUrl;
+      stepEnv = env ?? this.expandEnvVars({
+        ...(process.env as Record<string, string>),
+        ...flow.env,
+        ...this.deploymentEnv(target),
+      });
+      baseUrl = target;
     } else if (spec.wantsScenario) {
       // Engine-side lifecycle: start the scenario, probe readiness, hand the
       // adapter the service's base URL.
@@ -1545,6 +1727,23 @@ Examples:
       const timeout = r.timeout ? parseInt(r.timeout, 10) : 120000;
 
       await this.waitForProbe(url, method, expected, timeout);
+    }
+  }
+
+  /** Readiness probes for a deployment target — there is no endpoint map to
+   * resolve service/port against, so every declared probe addresses the
+   * deployment's base URL (service/port attributes are ignored). */
+  private async waitForDeploymentReadiness(
+    scenario: ParsedScenario,
+    baseUrl: string,
+  ): Promise<void> {
+    for (const r of scenario.readiness ?? []) {
+      await this.waitForProbe(
+        `${baseUrl}${r.path ?? "/"}`,
+        r.method ?? "GET",
+        r.expected ?? "ok",
+        r.timeout ? parseInt(r.timeout, 10) : 120000,
+      );
     }
   }
 

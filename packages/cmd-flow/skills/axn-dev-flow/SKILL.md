@@ -1,11 +1,11 @@
 ---
 name: axn-dev-flow
-description: Run XML-defined flow tests against scenarios or deployed devices with `axn-dev flow`. Supports the built-in tsAdapter (TypeScript/Playwright scripts), pluggable adapters (http, keycloak, custom tags), readiness checks, orchestrators, and JSON report output.
+description: Run XML-defined flow tests against scenarios, deployed devices, or any deployment URL with `axn-dev flow`. Supports the built-in tsAdapter (TypeScript/Playwright scripts), pluggable adapters (http, keycloak, custom tags), readiness checks, orchestrators, and JSON report output.
 ---
 
 # axn-dev flow Skill
 
-`axn-dev flow` runs XML-defined tests against Docker Compose scenarios or deployed devices. A flow describes which scenario to start, which model/adapter to use, the steps to execute, and assertions to verify.
+`axn-dev flow` runs XML-defined tests against Docker Compose scenarios, deployed devices (`-i`), or any already-running deployment (`--base-url` / `url=` on `<scenario>`). A flow describes which scenario to start, which model/adapter to use, the steps to execute, and assertions to verify.
 
 ## When to use this skill
 
@@ -63,7 +63,7 @@ description: Run XML-defined flow tests against scenarios or deployed devices wi
 
 ### Elements
 
-`<flow name="..." orchestrator="..." adapter="...">`:: A single test flow. `orchestrator` points to a TypeScript orchestrator script (see below). `adapter` is the *default step adapter*: `<step>`/`<script>` units without their own `adapter=` use it — e.g. `<flow adapter="axn-term">` lets a flow of adapter steps omit `adapter=` on every step. It does **not** affect `<usermessage>` (routed by the scenario's adapter) or custom tags (routed by the declaring adapter).
+`<flow name="..." orchestrator="..." adapter="..." base-url="...">`:: A single test flow. `orchestrator` points to a TypeScript orchestrator script (see below). `adapter` is the *default step adapter* — `<step>`/`<script>` units without their own `adapter=` use it — e.g. `<flow adapter="axn-term">` lets a flow of adapter steps omit `adapter=` on every step; it does **not** affect `<usermessage>` or custom tags. `base-url` is the *default deployment URL* — a scenario-less flow pointing at an already-running deployment (k8s, staging…); `url=` on a `<scenario>` and `--base-url` take precedence.
 
 `<scenarios>`:: One or more `<scenario>` elements to start and test against.
 
@@ -72,6 +72,7 @@ description: Run XML-defined flow tests against scenarios or deployed devices wi
   - `service` — target service inside the compose file
   - `adapter` — a registered adapter name (`http`, `tsAdapter`, `keycloak`, a plugin adapter, or a file path)
   - `orchestrator` — (tsAdapter) path to a TypeScript orchestrator script, relative to the flow file
+  - `url` — base URL of an already-running deployment (k8s, VM, staging…); no scenario is started and `name` becomes a label only. `${VAR}` expands against process + flow env; `--base-url` overrides it.
   - Plugin adapters may define additional attributes (e.g. `project`, `workingDirectory`, `branch`).
 
 `<readiness path="..." port="..." expected="..."/>`:: Optional child of `<scenario>`: poll an HTTP endpoint on the scenario's published port until it responds with the expected body substring (default: the service's published port).
@@ -297,6 +298,9 @@ axn-dev flow -f flows/app-dev-e2e.xml --clean-start --yes --no-stop
 # Run a tsAdapter flow against a deployed device
 axn-dev flow -f flows/device-check.xml -i my-device
 
+# Run against any already-running deployment — no scenario is started
+axn-dev flow -f flows/e2e.xml --base-url https://staging.example.com
+
 # List registered adapters and their claimed tags
 axn-dev flow list-adapters
 ```
@@ -358,6 +362,13 @@ axn-dev flow -f flows/example.xml --no-stop
 ```bash
 axn-dev flow -f flows/device.xml -i my-device
 ```
+
+**"Run a flow against a Kubernetes/staging deployment (no local scenario)":**
+```bash
+axn-dev flow -f flows/e2e.xml --base-url https://staging.example.com
+# or pin it in XML: <scenario name="staging" adapter="tsAdapter" url="https://staging.example.com"/>
+```
+`--base-url` overrides `url=` and applies to all scenarios in the run; env gets `BASE_URL` (+`SCENARIO_PORT` when the URL has an explicit port). Declared `<readiness>` probes address the base URL. Not combinable with `-i`, `--clean-start`, `--port`, `--auto-port`.
 
 **"Run a flow while inspecting the report":**
 ```bash

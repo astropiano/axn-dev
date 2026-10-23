@@ -106,6 +106,23 @@ describe("loadFlowsFromFile — evidence steps", () => {
     });
   });
 
+  it("parses <flow base-url> as the default deployment URL", () => {
+    const file = writeFlow(
+      "base-url.xml",
+      `<?xml version="1.0"?>
+      <flows>
+        <flow name="d" orchestrator="o.ts" base-url="https://staging.example.com">
+          <scenarios><scenario name="s" service="web" adapter="tsAdapter" url="https://prod.example.com"/></scenarios>
+          <steps><script>await page.goto('/')</script></steps>
+        </flow>
+      </flows>`
+    );
+
+    const [flow] = loadFlowsFromFile(file);
+    expect(flow.baseUrl).toBe("https://staging.example.com");
+    expect(flow.scenarios[0].url).toBe("https://prod.example.com");
+  });
+
   it("allows non-script step types inside <video>", () => {
     const file = writeFlow(
       "video-mixed.xml",
@@ -438,5 +455,29 @@ describe("<flow adapter> — default step adapter", () => {
     // usermessage + custom tags unaffected
     expect(steps[3].adapter).toBeUndefined();
     expect(steps[4].adapter).toBeUndefined();
+  });
+});
+
+describe("loadFlowsFromFile — deployment targets", () => {
+  it("parses url= on <scenario> as an explicit deployment target", () => {
+    const file = writeFlow(
+      "deploy.xml",
+      `<?xml version="1.0"?>
+      <flows>
+        <flow name="staging">
+          <scenarios>
+            <scenario name="staging" service="app" adapter="tsAdapter" url="https://staging.example.com/"/>
+            <scenario name="local" service="web" adapter="tsAdapter"/>
+          </scenarios>
+          <steps><step src="steps/x.ts"/></steps>
+        </flow>
+      </flows>`,
+    );
+    const [flow] = loadFlowsFromFile(file);
+    expect(flow.scenarios[0]).toMatchObject({
+      name: "staging",
+      url: "https://staging.example.com/",
+    });
+    expect(flow.scenarios[1].url).toBeUndefined();
   });
 });

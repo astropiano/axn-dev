@@ -383,6 +383,42 @@ device is resolved from `devices/<device>/device.yaml` under the configured
 `host` becomes `BASE_URL`; `devices/<device>/.env` entries are merged into the
 flow environment.
 
+=== Deployment targets
+
+Flows do not need a local Docker Compose scenario — any already-running
+deployment (Kubernetes, a VM, a preview environment, …) can be the target.
+Two ways to point a flow at one:
+
+`--base-url <url>`:: Run-level override — applies to every scenario in the
+run. Cannot be combined with `--infra`, `--clean-start`, `--port` or
+`--auto-port`.
+`url=` on `<scenario>`:: Pins a deployment in the flow file — useful for
+fixed environments like staging, and for mixing local scenarios and
+deployments in one flow. `${VAR}` references expand against process + flow
+env. `--base-url` overrides it.
+`base-url=` on `<flow>`:: Flow-level default deployment URL — applies to
+every scenario lacking `url=`, and lets a flow omit `<scenarios>` entirely
+for tsAdapter runs. Precedence: `--base-url` > `url=` > `base-url=`.
+
+[source,xml]
+----
+<scenario name="staging" adapter="tsAdapter" url="https://staging.example.com"/>
+
+<!-- scenario-less: the flow IS the deployment target -->
+<flow name="smoke" base-url="https://staging.example.com" orchestrator="orchestrators/pw.ts">
+  <steps><step src="steps/smoke.ts"/></steps>
+</flow>
+----
+
+With a deployment target the engine performs no scenario lifecycle — nothing
+is resolved, started, or stopped (the `<scenario>` `name` is a label only).
+The step environment gets `BASE_URL=<url>` plus `SCENARIO_PORT` when the URL
+carries an explicit port. Declared `<readiness>` probes address the base URL
+directly (`service`/`port` attributes are ignored — there is no endpoint
+map); a deployment with no probes runs immediately without a default probe.
+Deployment targets work for both `tsAdapter` and `<usermessage>` plugin
+adapters — unlike `-i`, which is tsAdapter-only.
+
 === Keycloak adapter
 
 The `keycloak` adapter (`@axn-dev/adapter-keycloak` plugin package) creates,

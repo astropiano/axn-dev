@@ -84,6 +84,11 @@ export interface ParsedScenario {
   project?: string;
   workingDirectory?: string;
   branch?: string;
+  /** Base URL of an already-running deployment (any platform — k8s, VM, …).
+   * When set, no local scenario is resolved or started; the env gets
+   * BASE_URL=<url> and readiness probes address the URL directly. ${VAR}
+   * references expand against process + flow env. --base-url overrides it. */
+  url?: string;
   readiness: ParsedReadiness[];
   orchestrator?: string;
 }
@@ -140,6 +145,10 @@ export interface ParsedFlow {
   /** Default step adapter (<flow adapter="x">) — applied to script steps
    * lacking adapter= at parse time. */
   adapter?: string;
+  /** Default deployment URL (<flow base-url="https://…">) — scenario-less
+   * flows pointing at a deployed target. Scenario url= and --base-url
+   * take precedence over it. */
+  baseUrl?: string;
   models: ParsedModel[];
   env: Record<string, string>;
   toolMode?: string;
@@ -841,6 +850,7 @@ export function parseFlow(raw: any): ParsedFlow {
     project: s.project,
     workingDirectory: s.workingDirectory,
     branch: s.branch,
+    url: s.url,
     readiness: parseReadiness(s.readiness),
     orchestrator: s.orchestrator,
   }));
@@ -988,6 +998,7 @@ export function parseFlow(raw: any): ParsedFlow {
     orchestrator: raw.orchestrator,
     runner: normalizeRunnerName(raw.runner),
     adapter: raw.adapter,
+    baseUrl: raw["base-url"] ?? raw.baseUrl,
     models,
     env,
     toolMode,
