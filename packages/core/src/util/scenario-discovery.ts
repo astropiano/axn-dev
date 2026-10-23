@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   detectRepo,
+  detectLocalScenarioRoot,
   discoverScenarios,
   discoverGlobalScenarios,
   discoverGlobalScenariosAsync,
@@ -39,6 +40,9 @@ export class ScenarioDiscoveryService {
   private readonly cwd: string;
   private config: AxnDevConfig;
   private repoContext: RepoContext | null;
+  /** Synthetic context when cwd is not in a repo but owns scenarios
+   * (a `scenarios/` dir, or roots declared in `./.axn-dev/config.yaml`). */
+  private readonly localContext: RepoContext | null;
   private readonly workbase: string | null;
 
   constructor(cwd: string = process.cwd(), workbase?: string) {
@@ -46,6 +50,7 @@ export class ScenarioDiscoveryService {
     this.workbase = workbase ?? null;
     this.config = this.applyWorkbase(loadAxnDevConfig(cwd));
     this.repoContext = this.resolveRepoContextWorkbase(detectRepo(cwd));
+    this.localContext = this.repoContext ? null : detectLocalScenarioRoot(cwd);
   }
 
   /**
@@ -148,10 +153,11 @@ export class ScenarioDiscoveryService {
    * Get all available project scenarios (if in a repo).
    */
   getProjectScenarios(): ScenarioInfo[] {
-    if (!this.repoContext) {
+    const ctx = this.repoContext ?? this.localContext;
+    if (!ctx) {
       return [];
     }
-    return discoverScenarios(this.repoContext);
+    return discoverScenarios(ctx);
   }
 
   /**
@@ -184,15 +190,16 @@ export class ScenarioDiscoveryService {
    * Throws if not in a repo.
    */
   resolveProjectScenario(scenarioName: string | null): ScenarioResolution {
-    if (!this.repoContext) {
-      throw new Error("Not inside a known repo. Cannot resolve project scenarios.");
+    const ctx = this.repoContext ?? this.localContext;
+    if (!ctx) {
+      throw new Error("Not inside a known repo or a directory with scenarios. Cannot resolve project scenarios.");
     }
 
-    const scenarios = discoverScenarios(this.repoContext);
+    const scenarios = discoverScenarios(ctx);
 
     if (!scenarioName) {
       if (scenarios.length === 0) {
-        throw new Error(`No scenarios found in ${this.repoContext.repoRoot}`);
+        throw new Error(`No scenarios found in ${ctx.repoRoot}`);
       }
       if (scenarios.length === 1) {
         return {
@@ -208,7 +215,7 @@ export class ScenarioDiscoveryService {
       throw new Error("Multiple scenarios available. Use --scenario <name> to pick one.");
     }
 
-    const scenario = findScenario(this.repoContext, scenarioName);
+    const scenario = findScenario(ctx, scenarioName);
     if (!scenario) {
       throw new Error(
         `Scenario '${scenarioName}' not found in project.\n` +
@@ -259,8 +266,9 @@ export class ScenarioDiscoveryService {
     const scenario = findGlobalScenario(this.getConfig(), scenarioName, this.workbase);
     if (!scenario) {
       // Fall back to local project scenario if available
-      if (this.repoContext) {
-        const localScenario = findScenario(this.repoContext, scenarioName);
+      const ctx = this.repoContext ?? this.localContext;
+      if (ctx) {
+        const localScenario = findScenario(ctx, scenarioName);
         if (localScenario) {
           return {
             scenario: localScenario,
@@ -291,6 +299,8 @@ export class ScenarioDiscoveryService {
       if (this.repoContext.variant) {
         console.log(`Variant: ${this.repoContext.variant}`);
       }
+    } else if (this.localContext) {
+      console.log(`Detected local scenario dir: ${this.localContext.repoRoot}`);
     }
   }
 }

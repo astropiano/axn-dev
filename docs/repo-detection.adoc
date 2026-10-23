@@ -29,6 +29,17 @@ When your cwd sits inside a nested root, discovery is scoped to that
 variant; at the repo root all variants are scanned (or just the single one,
 when exactly one exists).
 
+Outside a repo
+~~~~~~~~~~~~~
+
+When the current directory is not inside any repo, the directory itself is
+checked: a `scenarios/` subdir — or scenario roots declared in a local
+`.axn-dev/config.yaml` under `scenarios.roots` — makes it a *local scenario
+dir*. Scenario resolution (`start`, `stop`, `flow`, `clean`, `patch`) then
+works as if the directory were a repo, variant qualifiers included. It just
+never joins the workspace: no `_ROOT` env injection, no `axn-dev git`, no
+`overview` entry.
+
 A repo only joins the wider *workspace* — cross-repo scenario listing,
 `<NAME>_ROOT` env injection, `axn-dev git`, `axn-dev overview` — when it is
 registered in `~/.axn-dev/config.yaml` under `repos:` (or `integration:`

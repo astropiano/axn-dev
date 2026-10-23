@@ -127,7 +127,7 @@ function escapeRe(s: string): string {
 
 /** Concrete dirs that own a `scenarios/` subdir, per the repo's declared
  * layout. Result always includes the repo root unless patterns replace it. */
-function expandScenarioRoots(repoRoot: string): string[] {
+export function expandScenarioRoots(repoRoot: string): string[] {
   const roots = new Set<string>();
   for (const pattern of scenarioRootPatterns(repoRoot)) {
     for (const dir of expandRootPattern(repoRoot, pattern)) {
@@ -358,6 +358,24 @@ export function discoverScenarios(ctx: RepoContext, dirNames?: string[]): Scenar
   }
 
   return scenarios;
+}
+
+/** Repo-less scenario root: when the cwd is not inside a repo, a directory
+ * can still own scenarios — via its own `.axn-dev/config.yaml`
+ * `scenarios.roots` or just a `scenarios/` subdir. Returns a synthetic
+ * context (name = dir basename) or null when nothing is declared/found. */
+export function detectLocalScenarioRoot(dir: string): RepoContext | null {
+  const root = resolve(dir);
+  const names = scenarioDirNames(loadAxnDevConfig(root));
+  const has = expandScenarioRoots(root).some((r) =>
+    names.some((n) => existsSync(isAbsolute(n) ? n : join(r, n)))
+  );
+  if (!has) return null;
+  return {
+    repoName: basename(root) as RepoName,
+    repoRoot: root,
+    reposRoot: dirname(root),
+  };
 }
 
 /**

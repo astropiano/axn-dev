@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { detectRepo, discoverScenarios, scenarioMatches, type RepoContext } from "./repo.js";
+import { detectLocalScenarioRoot, detectRepo, discoverScenarios, scenarioMatches, type RepoContext } from "./repo.js";
 
 /** Fabricate a repo: .git marker + scenario dirs under variant roots. */
 function repoWithVariants(
@@ -118,5 +118,33 @@ describe("configured dirs (paths: section / env)", () => {
     expect(flowDirNames({ sections: { paths: { flows: "qa/flows" } } }))
       .toEqual(["x/flows", "/abs/flows"]);
     if (old === undefined) delete process.env.AXN_FLOW_DIRS; else process.env.AXN_FLOW_DIRS = old;
+  });
+});
+
+describe("repo-less local scenario dirs", () => {
+  it("detects a plain dir containing scenarios/ as a scenario root", () => {
+    const root = mkdtempSync(join(tmpdir(), "axn-local-test-"));
+    const dir = join(root, "scenarios", "demo");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "compose.yaml"), COMPOSE);
+    const ctx = detectLocalScenarioRoot(root);
+    expect(ctx?.repoName).toBe(root.split("/").pop());
+    expect(discoverScenarios(ctx!).map((s) => s.name)).toEqual(["demo"]);
+  });
+
+  it("honours a local .axn-dev/config.yaml roots layout", () => {
+    const root = mkdtempSync(join(tmpdir(), "axn-local-test-"));
+    mkdirSync(join(root, ".axn-dev"), { recursive: true });
+    writeFileSync(join(root, ".axn-dev", "config.yaml"), "scenarios:\n  roots: variants/*\n");
+    const dir = join(root, "variants", "hw", "scenarios", "sim");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "compose.yaml"), COMPOSE);
+    const ctx = detectLocalScenarioRoot(root);
+    expect(discoverScenarios(ctx!).map((s) => `${s.variant}/${s.name}`)).toEqual(["hw/sim"]);
+  });
+
+  it("returns null when the dir declares no scenarios", () => {
+    const root = mkdtempSync(join(tmpdir(), "axn-local-test-"));
+    expect(detectLocalScenarioRoot(root)).toBeNull();
   });
 });
