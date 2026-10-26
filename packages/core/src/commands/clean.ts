@@ -1,4 +1,4 @@
-import type { Command } from "./command.js";
+import type { Command, CommandExecuteOptions } from "./command.js";
 import { ScenarioDiscoveryService } from "../util/scenario-discovery.js";
 import { getComposeProjectName, runCompose } from "../util/compose.js";
 import { getRunningComposeProjects, isScenarioRunning } from "../util/ports.js";
@@ -33,7 +33,7 @@ Examples:
 `;
   }
 
-  async execute(args: string[]): Promise<void> {
+  async execute(args: string[], options?: CommandExecuteOptions): Promise<void> {
     let scenarioName: string | null = null;
     let useGlobal = false;
     let skipConfirm = false;
@@ -123,6 +123,8 @@ Examples:
       repoEnv: workspace.repoEnv,
       env: scenario.env,
       projectName: projectName ?? undefined,
+      silent: options?.quiet === true,
+      onOutput: options?.onOutput,
     };
 
     if (runningProjects.length > 0 || isScenarioRunning(scenario.path)) {

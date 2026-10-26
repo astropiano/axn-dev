@@ -1,4 +1,4 @@
-import type { Command } from "./command.js";
+import type { Command, CommandExecuteOptions } from "./command.js";
 import { ScenarioDiscoveryService } from "../util/scenario-discovery.js";
 import { getComposeProjectName, runCompose } from "../util/compose.js";
 import { driverFor } from "../driver.js";
@@ -41,7 +41,7 @@ Examples:
 `;
   }
 
-  async execute(args: string[]): Promise<void> {
+  async execute(args: string[], options?: CommandExecuteOptions): Promise<void> {
     let scenarioName: string | null = null;
     let useGlobal = false;
     let portFlag: number | null = null;
@@ -185,6 +185,8 @@ Examples:
       repoEnv: workspace.repoEnv,
       env: stopEnv,
       projectName: projectName ?? undefined,
+      silent: options?.quiet === true,
+      onOutput: options?.onOutput,
     });
 
     if (exitCode !== 0) {

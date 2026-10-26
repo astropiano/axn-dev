@@ -205,6 +205,9 @@ export interface ComposeRunOptions {
   repoEnv?: Record<string, string>;
   /** Extra environment variables from scenario axn-dev.yaml */
   env?: Record<string, string>;
+  /** Pipe child output without forwarding it to our stdout/stderr — quiet
+   * mode. Implies capture; combine with onOutput to collect silently. */
+  silent?: boolean;
   /**
    * Explicit compose project name (e.g. recovered from running containers via
    * getRunningComposeProjects). When unset, the name is derived from repo /
@@ -364,7 +367,7 @@ export async function runCompose(options: ComposeRunOptions): Promise<number> {
   }
 
   return new Promise((resolve) => {
-    const capture = typeof options.onOutput === "function";
+    const capture = typeof options.onOutput === "function" || options.silent === true;
     const child = spawn(cmd.binary, [...cmd.prefixArgs, ...composeArgs], {
       cwd: scenarioPath,
       env: childEnv,
@@ -373,7 +376,7 @@ export async function runCompose(options: ComposeRunOptions): Promise<number> {
 
     if (capture) {
       const forward = (data: Buffer, stream: NodeJS.WriteStream) => {
-        stream.write(data);
+        if (!options.silent) stream.write(data);
         options.onOutput?.(data.toString());
       };
       child.stdout?.on("data", (d: Buffer) => forward(d, process.stdout));

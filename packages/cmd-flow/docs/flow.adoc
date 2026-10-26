@@ -419,6 +419,58 @@ map); a deployment with no probes runs immediately without a default probe.
 Deployment targets work for both `tsAdapter` and `<usermessage>` plugin
 adapters — unlike `-i`, which is tsAdapter-only.
 
+=== CI usage
+
+`axn-dev flow` exits non-zero when any flow fails, so pipelines can gate on
+it directly. For CI logs, `--quiet` suppresses scenario lifecycle noise
+(compose output, adapter resolution, repeat progress) — warnings, the
+target deployment, failures and the result summary still print, and the
+captured compose log is replayed to stderr if a scenario fails to start.
+
+`--report <path>` writes an extra machine-readable report next to the
+default `flows/.reports/*.json`; `--report-format junit` produces JUnit XML
+(one testsuite per flow×model, one testcase per assertion) for CI test
+reports:
+
+[source,bash]
+----
+axn-dev flow -f flows/e2e.xml --quiet --report junit.xml --report-format junit
+----
+
+[source,yaml]
+----
+# .gitlab-ci.yml
+test:
+  script: axn-dev flow -f flows/e2e.xml --quiet --report junit.xml --report-format junit
+  artifacts:
+    when: always
+    reports:
+      junit: junit.xml
+----
+
+On GitHub, a failing flow fails the job step on its own; a JUnit reporter
+action renders the results in the PR checks:
+
+[source,yaml]
+----
+# .github/workflows/flows.yml
+name: flows
+on: [push, pull_request]
+jobs:
+  flow-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # checkout the axn-dev-cli + your repos, run axn-dev setup, then:
+      - run: axn-dev flow -f flows/e2e.xml --quiet --report junit.xml --report-format junit
+      - uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: flow-tests
+          path: junit.xml
+          reporter: java-junit
+----
+
 === Keycloak adapter
 
 The `keycloak` adapter (`@axn-dev/adapter-keycloak` plugin package) creates,

@@ -1,5 +1,9 @@
 export interface CommandExecuteOptions {
   env?: Record<string, string>;
+  /** Quiet mode — suppress routine progress output (CI). Errors still print. */
+  quiet?: boolean;
+  /** Collect subprocess output (e.g. compose logs) — e.g. to replay on failure. */
+  onOutput?: (chunk: string) => void;
 }
 
 export interface Command {

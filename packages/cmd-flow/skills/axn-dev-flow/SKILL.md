@@ -301,6 +301,9 @@ axn-dev flow -f flows/device-check.xml -i my-device
 # Run against any already-running deployment — no scenario is started
 axn-dev flow -f flows/e2e.xml --base-url https://staging.example.com
 
+# CI: quiet output + JUnit report artifact (exit code gates the pipeline)
+axn-dev flow -f flows/e2e.xml --quiet --report junit.xml --report-format junit
+
 # List registered adapters and their claimed tags
 axn-dev flow list-adapters
 ```

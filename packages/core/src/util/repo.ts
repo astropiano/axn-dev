@@ -424,7 +424,11 @@ export function discoverAllProjectScenarios(config: AxnDevConfig): Array<Scenari
   const scenarios: Array<ScenarioInfo & { repoName: string }> = [];
   const integrationPaths = new Set(config.integration.map(p => p.replace(/\/+$/, "")));
 
-  for (const [, repoPath] of Object.entries(config.repos)) {
+  // Group by the REGISTERED repo name (the config key), not the checkout's
+  // dir basename — two registered checkouts of one repo (e.g. `axn-term`
+  // and `axn-term-github` → ~/github/axn-term) both basename to "axn-term"
+  // and would otherwise merge into one indistinguishable section.
+  for (const [registeredName, repoPath] of Object.entries(config.repos)) {
     // Skip integration repos - they're handled as global scenarios
     if (integrationPaths.has(repoPath.replace(/\/+$/, ""))) continue;
 
@@ -432,7 +436,9 @@ export function discoverAllProjectScenarios(config: AxnDevConfig): Array<Scenari
     const basePath = mainWorktree ? dirname(mainWorktree.path) : resolve(repoPath, "..");
 
     for (const wt of worktrees) {
-      scenarios.push(...projectScenariosForWorktree(wt, basePath, integrationPaths));
+      for (const s of projectScenariosForWorktree(wt, basePath, integrationPaths)) {
+        scenarios.push({ ...s, repoName: registeredName });
+      }
     }
   }
 
@@ -480,7 +486,9 @@ export async function discoverAllProjectScenariosAsync(config: AxnDevConfig): Pr
   const integrationPaths = new Set(config.integration.map(p => p.replace(/\/+$/, "")));
 
   const perRepo = await Promise.all(
-    Object.values(config.repos).map(async (repoPath) => {
+    // Same grouping contract as the sync variant: the registered config
+    // name, never the checkout basename (identical for second clones).
+    Object.entries(config.repos).map(async ([registeredName, repoPath]) => {
       // Skip integration repos - they're handled as global scenarios
       if (integrationPaths.has(repoPath.replace(/\/+$/, ""))) return [];
 
@@ -491,7 +499,12 @@ export async function discoverAllProjectScenariosAsync(config: AxnDevConfig): Pr
         worktrees.map(async (wt) => {
           if (!isProjectWorktree(wt, integrationPaths)) return [];
           const ctx = await detectRepoAsync(wt.path);
-          return ctx ? projectScenariosForCtx(wt, basePath, ctx) : [];
+          return ctx
+            ? projectScenariosForCtx(wt, basePath, ctx).map((s) => ({
+                ...s,
+                repoName: registeredName,
+              }))
+            : [];
         }),
       );
       return perWorktree.flat();

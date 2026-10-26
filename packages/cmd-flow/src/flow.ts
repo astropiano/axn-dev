@@ -2,7 +2,7 @@ import type { Command } from "@axn-dev/core";
 import { existsSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
@@ -21,7 +21,7 @@ import {
   type FlowAdapterContext,
   type FlowAdapterStep,
 } from "@axn-dev/core";
-import { loadFlowsFromFile, discoverAllFlows, writeFlowReport, evidenceDirFor, normalizeRunnerName, type FlowInfo } from "@axn-dev/flow-format";
+import { loadFlowsFromFile, discoverAllFlows, writeFlowReport, evidenceDirFor, normalizeRunnerName, toJUnitXml, type FlowInfo } from "@axn-dev/flow-format";
 import type {
   ParsedFlow,
   ParsedScenario,
@@ -63,7 +63,7 @@ interface ExecScope {
 const FLOW_FLAGS = [
   "--file", "-f", "--model", "-m", "--filter", "-t", "--suite",
   "--no-stop", "--no-build", "--clean-start", "--manual", "--adapter",
-  "--report", "--report-format", "--scenario", "-s", "--project", "-p",
+  "--report", "--report-format", "--quiet", "-q",
   "--infra", "-i", "--base-url", "--global", "-g", "--workbase", "--auto-port",
   "--port", "--pwd", "-c", "--yes", "-y", "-B", "--runner", "--help", "-h",
 ];
@@ -86,6 +86,11 @@ export class FlowCommand implements Command {
   private runnerMode: string | null = process.env.AXN_FLOW_RUNNER ?? null;
   private adapterRegistry: AdapterRegistry | null = null;
   private orchestratorProcesses = new Map<string, OrchestratorProcess>();
+  /** --quiet: suppress routine progress output (CI). */
+  private quietMode = false;
+  /** --report-format: 'json' or 'junit'. */
+  private reportFormat = "json";
+  private reportPath: string | null = null;
 
   help(): string {
     return `
@@ -114,6 +119,14 @@ Options:
   --clean-start           Stop and remove volumes before starting the flow
   -y, --yes               Skip confirmation prompts (for --clean-start)
   --no-stop               Do not stop scenarios after the run
+  -q, --quiet             CI mode: suppress scenario lifecycle and progress
+                          noise; keep warnings, failures and the result
+                          summary. Compose logs are only printed when a
+                          scenario command fails.
+  --report <path>         Additionally write the run report to <path>
+                          (the default flows/.reports/*.json is always kept)
+  --report-format <fmt>   Format for --report: json (default) or junit
+                          (JUnit XML for CI test reports, e.g. GitLab)
   --runner <axn|pw>       Execution engine override: 'axn' (default) runs steps
                           through the orchestrator/script engine; 'pw' runs the
                           flow as a Playwright spec (test.step()s, traces,
@@ -286,6 +299,17 @@ Examples:
         autoPort = true;
       } else if (arg === "--no-stop") {
         stopAfter = false;
+      } else if (arg === "--quiet" || arg === "-q") {
+        this.quietMode = true;
+      } else if (arg === "--report") {
+        this.reportPath = args[++i];
+        if (!this.reportPath) throw new Error("--report requires a path");
+      } else if (arg === "--report-format") {
+        const fmt = args[++i];
+        if (fmt !== "json" && fmt !== "junit") {
+          throw new Error("--report-format must be 'json' or 'junit'");
+        }
+        this.reportFormat = fmt;
       } else if (arg === "--manual") {
         manual = true;
       } else if (arg === "--clean-start") {
@@ -369,7 +393,8 @@ Examples:
         if (stopAfter) {
           for (const scenario of startedScenarios) {
             try {
-              await new StopCommand().execute(["-s", scenario]);
+              await this.quietly(() =>
+                new StopCommand().execute(["-s", scenario], { quiet: this.quietMode }));
             } catch (err) {
               console.error(`\x1b[33mWarning: failed to stop scenario '${scenario}': ${err instanceof Error ? err.message : err}\x1b[0m`);
             }
@@ -401,7 +426,8 @@ Examples:
         }
       }
       for (const name of scenarioNames) {
-        await new CleanCommand().execute(["-s", name, "-y"]);
+        await this.quietly(() =>
+          new CleanCommand().execute(["-s", name, "-y"], { quiet: this.quietMode }));
       }
     }
 
@@ -426,7 +452,8 @@ Examples:
       if (stopAfter) {
         for (const scenario of startedScenarios) {
           try {
-            await new StopCommand().execute(["-s", scenario]);
+            await this.quietly(() =>
+              new StopCommand().execute(["-s", scenario], { quiet: this.quietMode }));
           } catch (err) {
             console.error(`\x1b[33mWarning: failed to stop scenario '${scenario}': ${err instanceof Error ? err.message : err}\x1b[0m`);
           }
@@ -437,6 +464,7 @@ Examples:
     if (this._resolvedFilePath) {
       writeFlowReport(this._resolvedFilePath, results);
     }
+    this.writeExtraReport(results);
     this.printSummary(results);
 
     if (results.some((r) => !r.passed)) {
@@ -680,7 +708,7 @@ Examples:
     const failures: string[] = [];
     for (let i = 0; i < num; i++) {
       if (ok + (num - i) < needed) break;
-      console.log(`    repeat run ${i + 1}/${num} (${ok} ok, need ${needed})`);
+      this.progress(`    repeat run ${i + 1}/${num} (${ok} ok, need ${needed})`);
       try {
         const r = await runIteration();
         if (r.ok) ok++;
@@ -1257,6 +1285,40 @@ Examples:
     return { ...(process.env as Record<string, string>), ...resolved };
   }
 
+  /** In --quiet mode, silence routine console.log output while fn runs —
+   * lifecycle commands (start/stop/clean) are chatty; console.error and
+   * console.warn still print, and compose output is silenced at fd level
+   * via options.quiet → runCompose silent. */
+  private async quietly<T>(fn: () => Promise<T>): Promise<T> {
+    if (!this.quietMode) return fn();
+    const orig = console.log;
+    console.log = () => {};
+    try {
+      return await fn();
+    } finally {
+      console.log = orig;
+    }
+  }
+
+  /** Progress output that --quiet suppresses. */
+  private progress(message: string): void {
+    if (!this.quietMode) console.log(message);
+  }
+
+  /** --report: write an additional machine-readable report at the
+   * requested path — JSON or JUnit XML for CI test reporting. */
+  private writeExtraReport(results: FlowResult[]): void {
+    if (!this.reportPath) return;
+    const path = resolve(process.cwd(), this.reportPath);
+    mkdirSync(dirname(path), { recursive: true });
+    const content =
+      this.reportFormat === "junit"
+        ? toJUnitXml(results)
+        : JSON.stringify({ timestamp: new Date().toISOString(), flows: results }, null, 2);
+    writeFileSync(path, content);
+    console.log(`Report written to ${path}`);
+  }
+
   /** Warn once per scenario about flag/attribute combinations that are
    * accepted but ignored or surprising — runs before any flow executes so
    * dead config is visible up front. */
@@ -1413,7 +1475,7 @@ Examples:
       baseUrl: extra?.baseUrl,
       runScript: (path, scriptEnv, cwd) =>
         this.runTsScript(path, scriptEnv ?? env, cwd ?? flowDir),
-      log: (message) => console.log(`    ${message}`),
+      log: (message) => this.progress(`    ${message}`),
     };
   }
 
@@ -1436,7 +1498,7 @@ Examples:
 
     // Registered plugin adapters run in-process.
     if (hasFlowAdapter(name)) {
-      console.log(`    Adapter '${name}' resolved via plugin registry`);
+      this.progress(`    Adapter '${name}' resolved via plugin registry`);
       const adapter = await flowAdapter(name);
       const out = await adapter.run(
         expandedStep as FlowAdapterStep,
@@ -1483,7 +1545,7 @@ Examples:
       const searched = candidates.map((c) => c.path).filter(Boolean).join(", ");
       throw new Error(`External adapter '${adapter}' not found. Searched: ${searched}`);
     }
-    console.log(`    Adapter '${adapter}' resolved via ${adapterVia}: ${adapterPath}`);
+    this.progress(`    Adapter '${adapter}' resolved via ${adapterVia}: ${adapterPath}`);
 
     return new Promise((resolve, reject) => {
       const tsxBin = this.resolveTsx();
@@ -1650,9 +1712,24 @@ Examples:
       if (portFlag !== null) {
         startArgs.push("--port", String(portFlag));
       }
-      await new StartCommand().execute(startArgs, { env: expandFlowEnv(flow.env) });
+      let startLog = "";
+      try {
+        await this.quietly(() =>
+          new StartCommand().execute(startArgs, {
+            env: expandFlowEnv(flow.env),
+            quiet: this.quietMode,
+            onOutput: this.quietMode ? (c) => { startLog += c; } : undefined,
+          }));
+      } catch (err) {
+        // Quiet mode swallowed the compose output — replay it so the
+        // failure is still diagnosable.
+        if (startLog) {
+          console.error(`\n--- scenario '${scenario.name}' start output ---\n${startLog}`);
+        }
+        throw err;
+      }
       startedScenarios.add(scenario.name);
-    } else {
+    } else if (!this.quietMode) {
       console.log(`\x1b[32mScenario '${scenario.name}' is already running\x1b[0m`);
     }
 

@@ -1,4 +1,4 @@
-import type { Command } from "./command.js";
+import type { Command, CommandExecuteOptions } from "./command.js";
 import { ScenarioDiscoveryService } from "../util/scenario-discovery.js";
 import { getComposeProjectName, runCompose } from "../util/compose.js";
 import { driverFor } from "../driver.js";
@@ -90,7 +90,7 @@ Examples:
 `;
   }
 
-  async execute(args: string[], options?: { env?: Record<string, string> }): Promise<void> {
+  async execute(args: string[], options?: CommandExecuteOptions): Promise<void> {
     let scenarioName: string | null = null;
     let useGlobal = false;
     let foreground = false;
@@ -276,6 +276,8 @@ Examples:
           ...(scenario.env ?? {}),
           ...(runningPort !== null ? { SCENARIO_PORT: String(runningPort) } : {}),
         },
+        silent: options?.quiet === true,
+        onOutput: options?.onOutput,
       });
       if (cleanCode !== 0) {
         throw new Error(`docker compose down --volumes exited with code ${cleanCode}`);
@@ -347,6 +349,8 @@ Examples:
         args: ["down"],
         repoEnv: workspace.repoEnv,
         env: downEnv,
+        silent: options?.quiet === true,
+        onOutput: options?.onOutput,
       });
       if (downCode !== 0) {
         throw new Error(`docker compose down exited with code ${downCode}`);
@@ -395,6 +399,8 @@ Examples:
         args: ["build", "--no-cache"],
         repoEnv: workspace.repoEnv,
         env: startEnv,
+        silent: options?.quiet === true,
+        onOutput: options?.onOutput,
       });
       if (buildCode !== 0) {
         throw new Error(`docker compose build --no-cache exited with code ${buildCode}`);
@@ -408,6 +414,8 @@ Examples:
       args: composeArgs,
       repoEnv: workspace.repoEnv,
       env: startEnv,
+      silent: options?.quiet === true,
+      onOutput: options?.onOutput,
     });
 
     if (exitCode !== 0) {
