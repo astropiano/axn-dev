@@ -1,7 +1,7 @@
 import type { Chunk } from "../types.js";
 
 export interface Extractor {
-  extract(text: string): Omit<Chunk, "offset">[];
+  extract(text: string): Promise<Omit<Chunk, "offset">[]>;
 }
 
 export interface RawUnit {

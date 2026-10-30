@@ -219,7 +219,7 @@ Examples:
       }
 
       const text = readFileSync(item.path, "utf-8");
-      item.chunks = extractChunks(item.path, text);
+      item.chunks = await extractChunks(item.path, text);
       item.hash = currentHash;
       if (git) {
         item.git_repo = git.repo;
@@ -335,7 +335,8 @@ Examples:
       const label = "score" in r ? "score" : ("similarity" in r ? "similarity" : "score");
       const title = r.titlePath ?? r.title;
       const corpusTag = r.corpus ? ` [${r.corpus}]` : "";
-      const header = title ? `${r.path} — ${title}` : r.path;
+      const location = r.startLine ? `${r.path}:${r.startLine}` : r.path;
+      const header = title ? `${location} — ${title}` : location;
       console.log(`\x1b[1m${i + 1}. ${header}\x1b[0m\x1b[2m${corpusTag} (${label}: ${score})\x1b[0m`);
       console.log(`   ${r.snippet.replace(/\n/g, "\n   ")}`);
       console.log("");
@@ -398,6 +399,6 @@ Examples:
   }
 
   private isTextFile(name: string): boolean {
-    return /\.(md|txt|ts|js|py|yaml|yml|json|sh|adoc|rst|toml|env|conf|cfg)$/.test(name);
+    return /\.(md|txt|ts|js|py|java|yaml|yml|json|sh|adoc|rst|toml|env|conf|cfg)$/.test(name);
   }
 }

@@ -17,6 +17,8 @@ export interface Chunk {
   text: string;
   title?: string;       // human-readable label (class, method, section...)
   titlePath?: string;   // dotted/qualified path, e.g. "MyClass.myMethod"
+  startLine?: number;   // 1-based, inclusive; set by extractors that parse source
+  endLine?: number;
   embedding?: number[];
 }
 
@@ -36,6 +38,7 @@ export interface BM25SearchResult {
   chunkOffset: number;
   title?: string;
   titlePath?: string;
+  startLine?: number;
   corpus?: string;
 }
 
@@ -46,6 +49,7 @@ export interface VectorSearchResult {
   chunkOffset: number;
   title?: string;
   titlePath?: string;
+  startLine?: number;
   corpus?: string;
 }
 

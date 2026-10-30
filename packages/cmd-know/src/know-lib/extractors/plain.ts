@@ -5,7 +5,7 @@ import type { Extractor } from "./types.js";
  * Fallback extractor for plain text / markdown — split by paragraphs and headings.
  */
 export class PlainTextExtractor implements Extractor {
-  extract(text: string): Omit<Chunk, "offset">[] {
+  async extract(text: string): Promise<Omit<Chunk, "offset">[]> {
     const chunks: Omit<Chunk, "offset">[] = [];
     const blocks = text.split(/\n{2,}/);
 

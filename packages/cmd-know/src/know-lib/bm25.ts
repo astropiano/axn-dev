@@ -117,6 +117,7 @@ export function searchBM25Index(
         chunkOffset: ref.offset,
         title: chunk.title,
         titlePath: chunk.titlePath,
+        startLine: chunk.startLine,
       };
     })
     .filter((r): r is BM25SearchResult => r !== undefined && r.path !== undefined);

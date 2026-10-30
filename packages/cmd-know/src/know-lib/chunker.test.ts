@@ -2,47 +2,47 @@ import { describe, it, expect } from "vitest";
 import { chunkText, chunksToDocument } from "./chunker.js";
 
 describe("chunkText", () => {
-  it("returns empty array for empty string", () => {
-    expect(chunkText("")).toEqual([]);
+  it("returns empty array for empty string", async () => {
+    expect(await chunkText("")).toEqual([]);
   });
 
-  it("returns empty array for whitespace-only string", () => {
-    expect(chunkText("   \n\n   ")).toEqual([]);
+  it("returns empty array for whitespace-only string", async () => {
+    expect(await chunkText("   \n\n   ")).toEqual([]);
   });
 
-  it("splits on blank lines into paragraphs", () => {
+  it("splits on blank lines into paragraphs", async () => {
     const text = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph.";
-    const chunks = chunkText(text);
+    const chunks = await chunkText(text);
     expect(chunks).toHaveLength(3);
     expect(chunks[0].text).toBe("First paragraph.");
     expect(chunks[1].text).toBe("Second paragraph.");
     expect(chunks[2].text).toBe("Third paragraph.");
   });
 
-  it("assigns sequential offsets", () => {
+  it("assigns sequential offsets", async () => {
     const text = "A\n\nB\n\nC";
-    const chunks = chunkText(text);
+    const chunks = await chunkText(text);
     expect(chunks.map((c) => c.offset)).toEqual([0, 1, 2]);
   });
 
-  it("splits markdown headings as new chunks within a block", () => {
+  it("splits markdown headings as new chunks within a block", async () => {
     const text = "# Heading One\nSome content.\n## Heading Two\nMore content.";
-    const chunks = chunkText(text);
+    const chunks = await chunkText(text);
     expect(chunks.length).toBeGreaterThanOrEqual(2);
     expect(chunks[0].text).toContain("Heading One");
     expect(chunks.some((c) => c.text.includes("Heading Two"))).toBe(true);
   });
 
-  it("handles single paragraph with no blank lines", () => {
+  it("handles single paragraph with no blank lines", async () => {
     const text = "Just one paragraph\nwith multiple lines.";
-    const chunks = chunkText(text);
+    const chunks = await chunkText(text);
     expect(chunks).toHaveLength(1);
     expect(chunks[0].text).toContain("Just one paragraph");
   });
 
-  it("handles multiple blank lines between paragraphs", () => {
+  it("handles multiple blank lines between paragraphs", async () => {
     const text = "Para one.\n\n\n\nPara two.";
-    const chunks = chunkText(text);
+    const chunks = await chunkText(text);
     expect(chunks).toHaveLength(2);
   });
 });

@@ -66,6 +66,7 @@ export async function bruteForceCosineSearch(
           chunkOffset: chunk.offset,
           title: chunk.title,
           titlePath: chunk.titlePath,
+          startLine: chunk.startLine,
         });
       }
     }
