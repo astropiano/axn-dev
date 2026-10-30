@@ -17,7 +17,7 @@ import {
 } from "./know-lib/storage.js";
 import { hashFile, gitInfo } from "./know-lib/hash.js";
 import { extractChunks, extractCodeFacts, hasCodeFacts } from "./know-lib/chunker.js";
-import { buildBM25Index, isCurrentBM25Index, searchLists } from "./know-lib/bm25.js";
+import { buildBM25Index, exactMatches, isCurrentBM25Index, searchLists } from "./know-lib/bm25.js";
 import { fuseFiles, isTestPath } from "./know-lib/results.js";
 import { codeLocationOf } from "./know-lib/codeLocation.js";
 import { typeReferences } from "./know-lib/typeRefs.js";
@@ -30,7 +30,7 @@ import type { KnowItem } from "./know-lib/types.js";
 const KNOW_SUBCOMMANDS = ["add", "index", "find", "add-deps", "deps"];
 const KNOW_FLAGS = [
   "--scope", "-s", "--corpus", "-c", "--indexing", "-i",
-  "--show-toplevel", "-n", "-q", "-C", "--include-tests", "--then", "--reverse", "--depth", "--path-to", "--help", "-h",
+  "--show-toplevel", "-n", "-q", "-C", "--include-tests", "--then", "--to", "--reverse", "--depth", "--path-to", "--help", "-h",
 ];
 
 export class KnowCommand implements Command {
@@ -68,9 +68,12 @@ Options:
   -n <number>                    Number of files to show (default: 5, find only).
                                  Each file is shown once, at its best match.
   --include-tests                Also show test sources (find only; hidden by default)
-  --then <callers|callees|implementations|references>
+  --then <callers|callees|implementations|references|impact|path>
                                  Follow the top code hit with a code navigator
-                                 plugin, e.g. @axn-dev/know-nav-ripwire (find only)
+                                 plugin, e.g. @axn-dev/know-nav-ripwire (find only).
+                                 impact: everything that reaches it, transitively.
+  --to <name>                    For --then path: the symbol the call chain
+                                 should lead to, by exact name (Type.member)
   --reverse                      What depends on the artifact instead (deps only)
   --depth <n>                    Stop after n hops (deps only; default: all)
   --path-to <artifact>           Why the artifact depends on another: the
@@ -86,6 +89,7 @@ Examples:
   axn-dev know find "docker compose" -n 10
   axn-dev know find "auth" -c axn-dev-cli -c my-server
   axn-dev know find "apply module update deltas" --then callers
+  axn-dev know find installOrUpdateModule --then path --to applyDeltas
   axn-dev know add-deps ~/git/dx-core
   axn-dev know deps magnolia-core --reverse --depth 1
   axn-dev know deps magnolia-dx-core-webapp --path-to jackrabbit-core
@@ -305,6 +309,7 @@ Examples:
     let topN = 5;
     let includeTests = false;
     let then: NavigationQuery | null = null;
+    let to: string | null = null;
 
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
@@ -320,6 +325,8 @@ Examples:
           throw new Error(`--then must be one of: ${NAVIGATION_QUERIES.join(", ")}`);
         }
         then = q as NavigationQuery;
+      } else if (a === "--to") {
+        to = args[++i];
       } else if (a === "-n") {
         topN = parseInt(args[++i], 10);
         if (isNaN(topN) || topN < 1) throw new Error("-n must be a positive integer");
@@ -331,6 +338,7 @@ Examples:
     }
 
     if (!query) throw new Error('Usage: axn-dev know find "<query>" [options]');
+    if (then === "path" && !to) throw new Error("--then path needs --to <name>: the symbol the path should lead to");
 
     const targets = corpusNames.length > 0
       ? corpusNames
@@ -415,7 +423,7 @@ Examples:
       console.log("");
     }
     if (testHint) console.log(`\x1b[2m${testHint}\x1b[0m`);
-    if (then) await this.followTopHit(then, top.map((t) => t.result), includeTests, itemsByCorpus);
+    if (then) await this.followTopHit(then, top.map((t) => t.result), includeTests, itemsByCorpus, to);
   }
 
   /**
@@ -427,6 +435,7 @@ Examples:
     results: SearchResult[],
     includeTests: boolean,
     itemsByCorpus: Map<string, KnowItem[]>,
+    to: string | null,
   ): Promise<void> {
     const hit = results.find((r) => codeLocationOf(r) !== null);
     const location = hit && codeLocationOf(hit);
@@ -434,9 +443,24 @@ Examples:
       console.log(`\n--then ${query}: none of the results is a code symbol.`);
       return;
     }
+    const nameOf = (l: { typeName: string; memberName?: string }) => (l.memberName ? `${l.typeName}.${l.memberName}` : l.typeName);
     // Implementations belong to the type, even when the hit was one of its members.
-    const symbol = location.memberName && query !== "implementations" ? `${location.typeName}.${location.memberName}` : location.typeName;
-    const navigated = await navigateCode(query, location);
+    const symbol = query === "implementations" ? location.typeName : nameOf(location);
+
+    let target: ReturnType<typeof codeLocationOf> = null;
+    if (query === "path") {
+      // --to names a symbol outright, so any word is a name here — even one search would read as plain text.
+      const matches = exactMatches(itemsByCorpus.get(hit.corpus ?? "") ?? [], [to!]);
+      target = matches.map(codeLocationOf).find((l) => l !== null) ?? null;
+      if (!target) {
+        console.log(`\n--then path: no symbol named '${to}' in corpus '${hit.corpus}'; name it exactly, e.g. Type.member.`);
+        return;
+      }
+      if (matches.length > 1) {
+        console.log(`\x1b[2m'${to}' names ${matches.length} symbols; using ${matches[0].titlePath ?? matches[0].path} — qualify it (Type.member) to pick another.\x1b[0m`);
+      }
+    }
+    const navigated = await navigateCode(query, location, target ?? undefined);
     // For a type, know answers references itself from the uses it recorded at
     // index time — signatures and fields included, which a navigator may miss.
     const own = query === "references" && !location.memberName && location.qualifiedName
@@ -454,13 +478,16 @@ Examples:
       seen.add(key);
       return true;
     });
-    const hits = includeTests ? all : all.filter((h) => !isTestPath(h.path));
+    // A path is one chain: hiding a step in a test source would break it.
+    const hits = includeTests || query === "path" ? all : all.filter((h) => !isTestPath(h.path));
     const sources = [navigated?.navigator, own.length > 0 ? "know" : null].filter(Boolean).join(" + ");
-    console.log(`\n\x1b[32m${query[0].toUpperCase()}${query.slice(1)} of ${symbol}\x1b[0m\x1b[2m (${sources}, ${hits.length} hit(s))\x1b[0m`);
-    for (const h of hits) {
+    const heading = query === "path" ? `Path from ${symbol} to ${nameOf(target!)}` : `${query[0].toUpperCase()}${query.slice(1)} of ${symbol}`;
+    console.log(`\n\x1b[32m${heading}\x1b[0m\x1b[2m (${sources}, ${hits.length} ${query === "path" ? "step(s)" : "hit(s)"})\x1b[0m`);
+    hits.forEach((h, i) => {
       const where = h.line ? `${h.path}:${h.line}` : h.path;
-      console.log(`  ${where}${h.symbol ? ` — ${h.symbol}` : ""}${h.kind ? `\x1b[2m (${h.kind})\x1b[0m` : ""}`);
-    }
+      const lead = query === "path" ? `${i === 0 ? "" : "-> "}` : "";
+      console.log(`  ${lead}${where}${h.symbol ? ` — ${h.symbol}` : ""}${h.kind ? `\x1b[2m (${h.kind})\x1b[0m` : ""}`);
+    });
     const hidden = all.length - hits.length;
     if (hidden > 0) console.log(`\x1b[2m  ${hidden} hit(s) in test sources hidden; --include-tests shows them.\x1b[0m`);
     for (const c of navigated?.caveats ?? []) console.log(`\x1b[33m  ⚠ ${c}\x1b[0m`);

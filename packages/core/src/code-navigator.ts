@@ -18,9 +18,13 @@ import { existsSync } from "node:fs";
 import { extname } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export type NavigationQuery = "callers" | "callees" | "implementations" | "references";
+/**
+ * `impact`: everything that reaches the symbol, transitively — what a change
+ * to it can affect. `path`: the call chain from the symbol to a second one.
+ */
+export type NavigationQuery = "callers" | "callees" | "implementations" | "references" | "impact" | "path";
 
-export const NAVIGATION_QUERIES: readonly NavigationQuery[] = ["callers", "callees", "implementations", "references"];
+export const NAVIGATION_QUERIES: readonly NavigationQuery[] = ["callers", "callees", "implementations", "references", "impact", "path"];
 
 /** A symbol at a known place in the code. */
 export interface CodeLocation {
@@ -58,7 +62,8 @@ export interface NavigationResult {
 }
 
 export interface CodeNavigator {
-  navigate(query: NavigationQuery, location: CodeLocation): Promise<NavigationResult>;
+  /** @param target the second symbol, for `path`; ignored otherwise. */
+  navigate(query: NavigationQuery, location: CodeLocation, target?: CodeLocation): Promise<NavigationResult>;
 }
 
 export interface CodeNavigatorSpec {
@@ -108,9 +113,13 @@ export async function loadCodeNavigator(spec: CodeNavigatorSpec): Promise<CodeNa
  * Answer `query` for `location` with the first registered navigator that
  * serves the file. Returns null when none does.
  */
-export async function navigateCode(query: NavigationQuery, location: CodeLocation): Promise<NavigationResult | null> {
+export async function navigateCode(
+  query: NavigationQuery,
+  location: CodeLocation,
+  target?: CodeLocation,
+): Promise<NavigationResult | null> {
   const [spec] = codeNavigatorsFor(location.path);
   if (!spec) return null;
-  const result = await (await loadCodeNavigator(spec)).navigate(query, location);
+  const result = await (await loadCodeNavigator(spec)).navigate(query, location, target);
   return { ...result, navigator: result.navigator || spec.name };
 }

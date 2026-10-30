@@ -37,6 +37,7 @@
           "--show-toplevel",
           "--include-tests",
           "--then",
+          "--to",
           "--reverse",
           "--depth",
           "--path-to",

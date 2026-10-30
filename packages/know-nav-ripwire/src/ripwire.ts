@@ -28,9 +28,14 @@ export function selectorFor(location: CodeLocation): string {
   return location.memberName ? `${basename(location.path)}:${location.memberName}` : location.typeName;
 }
 
-export function argsFor(query: NavigationQuery, location: CodeLocation): string[] {
+export function argsFor(query: NavigationQuery, location: CodeLocation, target?: CodeLocation): string[] {
   const sel = selectorFor(location);
   switch (query) {
+    case "impact":
+      return [`--impact=${sel}`, "--json"];
+    case "path":
+      if (!target) throw new Error("A path needs a second symbol to lead to.");
+      return [`--path=${sel},${selectorFor(target)}`];
     case "callers":
       return [`--callers=${sel}`, "--json"];
     case "callees":
@@ -50,8 +55,8 @@ function hitLocation(p: string, root: string): Pick<NavigationHit, "path" | "lin
   return m ? { path: resolve(root, m[1]), line: Number(m[2]) } : { path: resolve(root, p) };
 }
 
-/** `--callers`/`--callees` with `--json`: `{ callers: [{ t, n, p }] , defs, counts_floor, … }`. */
-export function parseJsonList(stdout: string, key: "callers" | "callees", root: string): { hits: NavigationHit[]; gauges: Gauges } {
+/** `--callers`/`--callees`/`--impact` with `--json`: `{ <key>: [{ t, n, p }], defs, counts_floor, … }`. */
+export function parseJsonList(stdout: string, key: "callers" | "callees" | "impact", root: string): { hits: NavigationHit[]; gauges: Gauges } {
   const doc = JSON.parse(stdout) as Record<string, unknown>;
   const rows = (doc[key] as { t?: string; n?: string; p: string }[] | undefined) ?? [];
   return {
@@ -94,11 +99,32 @@ function caveats(query: NavigationQuery, location: CodeLocation, sel: string, ga
     out.push(`'${sel}' matches ${gauges.defs} definitions; the hits may mix them.`);
   }
   if (gauges.countsFloor) {
-    out.push(
-      `A lower bound: ripwire left ${gauges.unresolved ?? "some"} references unresolved and ${gauges.ambiguous ?? "some"} ambiguous in this repo, so some ${query} may be missing.`,
-    );
+    const unresolved = `ripwire left ${gauges.unresolved ?? "some"} references unresolved and ${gauges.ambiguous ?? "some"} ambiguous in this repo`;
+    out.push(query === "path"
+      ? `Not final: ${unresolved}, so a shorter path, or one reported missing, may exist.`
+      : `A lower bound: ${unresolved}, so some ${query} may be missing.`);
   }
   return out;
+}
+
+/**
+ * `--path` has no JSON form: `<path reachable=… hops=… hint=…>` then one
+ * `<s t= n= p=/>` per hop, both ends included. With no directed path, the
+ * hint says what to try instead; it becomes a caveat.
+ */
+export function parsePath(stdout: string, root: string): { hits: NavigationHit[]; gauges: Gauges; noPathHint?: string } {
+  const header = /<path [^>]*>/.exec(stdout)?.[0] ?? "";
+  const hits: NavigationHit[] = [];
+  for (const [row] of stdout.matchAll(/<s t="[^"]*"[^>]*>/g)) {
+    const p = attr(row, "p");
+    if (p) hits.push({ ...hitLocation(p, root), symbol: attr(row, "n"), kind: attr(row, "t") });
+  }
+  const num = (n: string) => (attr(header, n) === undefined ? undefined : Number(attr(header, n)));
+  return {
+    hits,
+    gauges: { countsFloor: attr(header, "counts_floor") === "1", unresolved: num("graph_unresolved"), ambiguous: num("graph_ambiguous") },
+    noPathHint: attr(header, "reachable") === "0" ? attr(header, "hint") ?? "" : undefined,
+  };
 }
 
 /** ripwire exits 1 with one of these when the selector names nothing it indexed. */
@@ -109,9 +135,10 @@ export async function navigate(
   location: CodeLocation,
   root: string,
   run: RipwireRunner,
+  target?: CodeLocation,
 ): Promise<NavigationResult> {
   const sel = query === "implementations" ? location.typeName : selectorFor(location);
-  const out = await run(root, argsFor(query, location));
+  const out = await run(root, argsFor(query, location, target));
 
   if (out.exitCode !== 0) {
     if (NOT_FOUND.test(out.stderr)) {
@@ -120,8 +147,15 @@ export async function navigate(
     throw new Error(`ripwire failed (exit ${out.exitCode}): ${out.stderr.trim().split("\n")[0]}`);
   }
 
+  if (query === "path") {
+    const { hits, gauges, noPathHint } = parsePath(out.stdout, root);
+    const found = noPathHint === undefined
+      ? []
+      : [`No directed call path from '${sel}' to '${selectorFor(target!)}'.${noPathHint ? ` ripwire: ${noPathHint}` : ""}`];
+    return { navigator: "ripwire", hits, caveats: [...found, ...caveats(query, location, sel, gauges)] };
+  }
   const { hits, gauges } =
-    query === "callers" || query === "callees"
+    query === "callers" || query === "callees" || query === "impact"
       ? parseJsonList(out.stdout, query, root)
       : parseUses(out.stdout, root, query === "implementations" ? ["extends"] : undefined);
   return { navigator: "ripwire", hits, caveats: caveats(query, location, sel, gauges) };

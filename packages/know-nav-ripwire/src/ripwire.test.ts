@@ -81,6 +81,44 @@ describe("ripwire navigator", () => {
     expect(result.caveats).toContain("'AbstractRepositoryTask' is a type, and ripwire reports callers of methods; try references or implementations.");
   });
 
+  it("asks for a method's impact and reads every symbol that reaches it", async () => {
+    const run = runner({ stdout: JSON.stringify({ defs: 1, counts_floor: true, impact: [{ t: "method", n: "installOrUpdateModule", p: "core/src/main/java/a/ModuleManagerImpl.java:502" }] }) });
+
+    const result = await navigate("impact", method, ROOT, run);
+
+    expect(run).toHaveBeenCalledWith(ROOT, ["--impact=ModuleManagerImpl.java:applyDeltas", "--json"]);
+    expect(result.hits).toEqual([{ path: "/repo/core/src/main/java/a/ModuleManagerImpl.java", line: 502, symbol: "installOrUpdateModule", kind: "method" }]);
+  });
+
+  it("asks for the path between two symbols and returns its steps in order", async () => {
+    const run = runner({
+      stdout: `<path schema="ripwire.path/v1" reachable="1" hops="1" counts_floor="1" graph_unresolved="479" graph_ambiguous="5362">
+<s t="method" n="installOrUpdateModule" p="core/src/main/java/a/ModuleManagerImpl.java:502"/>
+<s t="method" n="applyDeltas" p="core/src/main/java/a/ModuleManagerImpl.java:516"/>
+</path>`,
+    });
+    const from: CodeLocation = { ...method, memberName: "installOrUpdateModule" };
+
+    const result = await navigate("path", from, ROOT, run, method);
+
+    expect(run).toHaveBeenCalledWith(ROOT, ["--path=ModuleManagerImpl.java:installOrUpdateModule,ModuleManagerImpl.java:applyDeltas"]);
+    expect(result.hits.map((h) => `${h.symbol}@${h.line}`)).toEqual(["installOrUpdateModule@502", "applyDeltas@516"]);
+    expect(result.caveats.some((c) => c.startsWith("No directed call path"))).toBe(false);
+  });
+
+  it("says when no directed path exists, passing on ripwire's hint", async () => {
+    const run = runner({ stdout: `<path schema="ripwire.path/v1" reachable="0" hops="0" hint="try --connect=A,B (undirected)"></path>` });
+
+    const result = await navigate("path", method, ROOT, run, type);
+
+    expect(result.hits).toEqual([]);
+    expect(result.caveats[0]).toBe("No directed call path from 'ModuleManagerImpl.java:applyDeltas' to 'AbstractRepositoryTask'. ripwire: try --connect=A,B (undirected)");
+  });
+
+  it("refuses a path without a second symbol", async () => {
+    await expect(navigate("path", method, ROOT, runner({}))).rejects.toThrow("second symbol");
+  });
+
   it("warns when the name matches several definitions", async () => {
     const result = await navigate("implementations", type, ROOT, runner({ stdout: USES_XML }));
     expect(result.caveats.join(" ")).toContain("matches 2 definitions");

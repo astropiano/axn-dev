@@ -228,11 +228,11 @@ describe("know find --then", () => {
     writeFileSync(
       NAV,
       `export const navigator = {
-        async navigate(query, location) {
+        async navigate(query, location, target) {
           return {
             navigator: "fake",
             hits: [
-              { path: "/elsewhere/Zoo.java", line: 7, symbol: query + " of " + location.typeName + "." + location.memberName + "@" + location.line },
+              { path: "/elsewhere/Zoo.java", line: 7, symbol: query + " of " + location.typeName + "." + location.memberName + "@" + location.line + (target ? " to " + target.typeName : "") },
               { path: "/elsewhere/src/test/ZooTest.java", line: 3, symbol: "inTest" },
             ],
             caveats: ["a lower bound"],
@@ -286,6 +286,20 @@ describe("know find --then", () => {
 
     const [again] = loadAllItems(AXN_ROOT, "nav").filter((i) => i.path.endsWith("Keeper.java"));
     expect(again.code?.types.Pouch).toEqual([4]);
+  });
+
+  it("resolves --to by exact name and hands both symbols to the navigator for a path", async () => {
+    const out = await output("find", "carry kangaroo", "-c", "nav", "--then", "path", "--to", "Keeper");
+
+    expect(out).toContain("Path from Pouch.carry to Keeper");
+    expect(out).toContain("path of Pouch.carry@4 to Keeper");
+    // A path keeps every step, test sources included.
+    expect(out).toContain("ZooTest.java");
+  });
+
+  it("needs --to for a path, and says so when the name matches nothing", async () => {
+    await expect(run("find", "carry kangaroo", "-c", "nav", "--then", "path")).rejects.toThrow("--then path needs --to");
+    expect(await output("find", "carry kangaroo", "-c", "nav", "--then", "path", "--to", "Nobody")).toContain("no symbol named 'Nobody'");
   });
 
   it("rejects an unknown navigation", async () => {

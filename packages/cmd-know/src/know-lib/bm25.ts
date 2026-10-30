@@ -167,28 +167,7 @@ export function searchBM25Index(
   // BM25 normalises by the whole chunk's length, so a class whose chunk is its
   // entire body loses to a short note that merely mentions its name. A query
   // naming a symbol is a lookup: the symbols with that exact name come first.
-  const identifiers = identifiersIn(query);
-  const topScore = rawResults[0]?.[1] ?? 1;
-  const exact: BM25SearchResult[] = [];
-  if (identifiers.length > 0) {
-    for (const item of items) {
-      for (const chunk of item.chunks) {
-        if (!identifiers.some((id) => namedBy(chunk, id))) continue;
-        exact.push({
-          path: item.path,
-          score: topScore,
-          exact: true,
-          snippet: bestSnippet(chunk, query),
-          chunkOffset: chunk.offset,
-          title: chunk.title,
-          titlePath: chunk.titlePath,
-          startLine: chunk.startLine,
-        });
-      }
-    }
-    // A type before its members: the type is what an exact type name asks for.
-    exact.sort((a, b) => Number(a.titlePath?.includes("(") ?? false) - Number(b.titlePath?.includes("(") ?? false));
-  }
+  const exact = exactMatches(items, identifiersIn(query), query, rawResults[0]?.[1] ?? 1);
   const exactKeys = new Set(exact.map((r) => `${r.path}:${r.chunkOffset}`));
 
   const ranked = rawResults
@@ -212,6 +191,33 @@ export function searchBM25Index(
     .filter((r): r is BM25SearchResult => r !== undefined && r.path !== undefined)
     .filter((r) => !exactKeys.has(`${r.path}:${r.chunkOffset}`));
   return [...exact, ...ranked].slice(0, topN);
+}
+
+/**
+ * The chunks named exactly by one of `identifiers`, types before members —
+ * the type is what an exact type name asks for.
+ * @param query picks each match's snippet.
+ * @param score reported for each match; a match ranks by name, not by score.
+ */
+export function exactMatches(items: KnowItem[], identifiers: string[], query = identifiers.join(" "), score = 0): BM25SearchResult[] {
+  if (identifiers.length === 0) return [];
+  const exact: BM25SearchResult[] = [];
+  for (const item of items) {
+    for (const chunk of item.chunks) {
+      if (!identifiers.some((id) => namedBy(chunk, id))) continue;
+      exact.push({
+        path: item.path,
+        score,
+        exact: true,
+        snippet: bestSnippet(chunk, query),
+        chunkOffset: chunk.offset,
+        title: chunk.title,
+        titlePath: chunk.titlePath,
+        startLine: chunk.startLine,
+      });
+    }
+  }
+  return exact.sort((a, b) => Number(a.titlePath?.includes("(") ?? false) - Number(b.titlePath?.includes("(") ?? false));
 }
 
 /**
