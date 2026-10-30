@@ -33,6 +33,7 @@
           "--indexing",
           "-i",
           "--show-toplevel",
+          "--include-tests",
           "-n",
           "-q",
           "-C",

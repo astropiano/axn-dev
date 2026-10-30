@@ -12,16 +12,17 @@ import {
   indexPath,
   type Scope,
 } from "./know-lib/storage.js";
-import { hashFile, gitInfo, needsReindex } from "./know-lib/hash.js";
+import { hashFile, gitInfo } from "./know-lib/hash.js";
 import { extractChunks } from "./know-lib/chunker.js";
 import { buildIndex, search } from "./know-lib/bm25.js";
+import { groupByFile, isTestPath } from "./know-lib/results.js";
 import type { IndexingTechnique, VectorConfig, SearchResult } from "./know-lib/types.js";
 import type { KnowItem } from "./know-lib/types.js";
 
 const KNOW_SUBCOMMANDS = ["add", "index", "find"];
 const KNOW_FLAGS = [
   "--scope", "-s", "--corpus", "-c", "--indexing", "-i",
-  "--show-toplevel", "-n", "-q", "-C", "--help", "-h",
+  "--show-toplevel", "-n", "-q", "-C", "--include-tests", "--help", "-h",
 ];
 
 export class KnowCommand implements Command {
@@ -52,7 +53,9 @@ Options:
                                  be passed multiple times to search several
                                  corpora at once.
   --indexing, -i <bm25|vector|hybrid>  Indexing technique (default: bm25)
-  -n <number>                    Number of results to show (default: 5, find only)
+  -n <number>                    Number of files to show (default: 5, find only).
+                                 Each file is shown once, at its best match.
+  --include-tests                Also show test sources (find only; hidden by default)
   --help, -h                     Show this help
 
 Examples:
@@ -150,12 +153,6 @@ Examples:
         chunks: [],
       };
 
-      const git = gitInfo(filePath);
-      if (git) {
-        item.git_repo = git.repo;
-        item.git_commit = git.commit;
-      }
-
       saveItem(axnRoot, corpus, item);
       console.log(`  added: ${filePath}`);
       added++;
@@ -196,6 +193,7 @@ Examples:
     }
 
     let indexed = 0;
+    let contentChanged = false;
     let skipped = 0;
     let missing = 0;
     const updatedItems: KnowItem[] = [];
@@ -208,19 +206,20 @@ Examples:
         continue;
       }
 
+      // Content decides, not the last commit: an uncommitted edit must be re-indexed,
+      // and an unchanged file must cost no git process.
       const currentHash = hashFile(item.path);
-      const git = gitInfo(item.path);
-      const currentCommit = git?.commit;
-
-      if (item.chunks.length > 0 && item.hash && !needsReindex(currentHash, currentCommit, item.hash, item.git_commit)) {
+      if (item.chunks.length > 0 && item.hash === currentHash) {
         skipped++;
         updatedItems.push(item);
         continue;
       }
 
       const text = readFileSync(item.path, "utf-8");
+      const hadChunks = item.chunks.length > 0;
       item.chunks = await extractChunks(item.path, text);
       item.hash = currentHash;
+      const git = gitInfo(item.path);
       if (git) {
         item.git_repo = git.repo;
         item.git_commit = git.commit;
@@ -229,6 +228,7 @@ Examples:
       saveItem(axnRoot, corpus, item);
       console.log(`  indexed: ${item.path} (${item.chunks.length} chunks)`);
       indexed++;
+      if (hadChunks || item.chunks.length > 0) contentChanged = true;
       updatedItems.push(item);
     }
 
@@ -236,7 +236,11 @@ Examples:
     if (!config) throw new Error(`Corpus config not found for '${corpus}'`);
     console.log(`\nBuilding ${config.indexing} index for corpus '${corpus}'...`);
     const idxPath = indexPath(axnRoot, corpus);
-    await buildIndex(updatedItems.filter((i) => i.chunks.length > 0), idxPath, config);
+    // A full BM25 rebuild is most of an unchanged run's time; other modes still
+    // go through buildIndex for any missing embeddings.
+    if (config.indexing !== "bm25" || contentChanged || !existsSync(idxPath)) {
+      await buildIndex(updatedItems.filter((i) => i.chunks.length > 0), idxPath, config);
+    }
 
     console.log(
       `Done. ${indexed} indexed, ${skipped} up-to-date, ${missing} missing.`
@@ -252,6 +256,7 @@ Examples:
     let scope: Scope = "global";
     const corpusNames: string[] = [];
     let topN = 5;
+    let includeTests = false;
 
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
@@ -259,6 +264,8 @@ Examples:
         scope = this.parseScope(args[++i]);
       } else if (a === "--corpus" || a === "-c") {
         corpusNames.push(args[++i]);
+      } else if (a === "--include-tests") {
+        includeTests = true;
       } else if (a === "-n") {
         topN = parseInt(args[++i], 10);
         if (isNaN(topN) || topN < 1) throw new Error("-n must be a positive integer");
@@ -276,6 +283,9 @@ Examples:
       : [scope === "global" ? "personal" : "project"];
     const axnRoot = resolveAxnDevRoot(scope);
 
+    // Chunks, not files, are ranked: fetch deep enough that grouping by file and
+    // hiding tests still leave topN files.
+    const fetchN = Math.max(topN * 20, 100);
     let allResults: SearchResult[] = [];
     let searched = 0;
     let skipped = 0;
@@ -307,7 +317,7 @@ Examples:
       }
 
       const items = loadAllItems(axnRoot, corpus);
-      const results = await search(idxPath, items, config, query, topN);
+      const results = await search(idxPath, items, config, query, fetchN);
       for (const r of results) {
         r.corpus = corpus;
       }
@@ -325,22 +335,32 @@ Examples:
     }
 
     allResults.sort((a, b) => this.resultScore(b) - this.resultScore(a));
-    const top = allResults.slice(0, topN);
+    const shown = includeTests ? allResults : allResults.filter((r) => !isTestPath(r.path));
+    const hiddenTests = allResults.length - shown.length;
+    const top = groupByFile(shown).slice(0, topN);
+    const testHint = hiddenTests > 0 ? `${hiddenTests} matching test chunk(s) hidden; --include-tests shows them.` : "";
+
+    if (top.length === 0) {
+      console.log(`No results found for: ${query}${testHint ? `\n${testHint}` : ""}`);
+      return;
+    }
 
     console.log(`\n\x1b[32mTop ${top.length} result(s) for:\x1b[0m "${query}"\n`);
 
     for (let i = 0; i < top.length; i++) {
-      const r = top[i];
+      const { result: r, moreInFile } = top[i];
       const score = "score" in r ? r.score.toFixed(3) : ("similarity" in r ? r.similarity.toFixed(3) : "0");
       const label = "score" in r ? "score" : ("similarity" in r ? "similarity" : "score");
       const title = r.titlePath ?? r.title;
       const corpusTag = r.corpus ? ` [${r.corpus}]` : "";
       const location = r.startLine ? `${r.path}:${r.startLine}` : r.path;
       const header = title ? `${location} — ${title}` : location;
-      console.log(`\x1b[1m${i + 1}. ${header}\x1b[0m\x1b[2m${corpusTag} (${label}: ${score})\x1b[0m`);
+      const more = moreInFile > 0 ? `, +${moreInFile} more in this file` : "";
+      console.log(`\x1b[1m${i + 1}. ${header}\x1b[0m\x1b[2m${corpusTag} (${label}: ${score}${more})\x1b[0m`);
       console.log(`   ${r.snippet.replace(/\n/g, "\n   ")}`);
       console.log("");
     }
+    if (testHint) console.log(`\x1b[2m${testHint}\x1b[0m`);
   }
 
   // ---------------------------------------------------------------------------
