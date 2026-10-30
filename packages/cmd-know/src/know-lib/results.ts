@@ -46,6 +46,7 @@ export function fuseFiles(lists: SearchResult[][], topN: number): FileResult[] {
     bestRank: number;
     chunks: Set<string>;
     score: number;
+    exact: boolean;
     order: number;
   }
   const byFile = new Map<string, Candidate>();
@@ -58,24 +59,30 @@ export function fuseFiles(lists: SearchResult[][], topN: number): FileResult[] {
       const key = fileKey(r);
       let c = byFile.get(key);
       if (!c) {
-        c = { result: r, bestRank: Infinity, chunks: new Set(), score: 0, order: order++ };
+        c = { result: r, bestRank: Infinity, chunks: new Set(), score: 0, exact: false, order: order++ };
         byFile.set(key, c);
       }
       c.chunks.add(String(r.chunkOffset));
+      if ("exact" in r && r.exact) {
+        c.exact = true;
+        c.result = r;
+      }
       if (seen.has(key)) continue;
       seen.add(key);
       fileRank++;
       c.score += 1 / (RRF_K + fileRank);
       if (fileRank < c.bestRank) {
         c.bestRank = fileRank;
-        c.result = r;
+        if (!c.exact) c.result = r;
       }
     }
   }
 
-  // Ties keep first-seen order, so a single list comes back in its own order.
+  // A file named exactly by the query is a lookup's answer, whatever the other
+  // lists think of it. Ties keep first-seen order, so a single list comes back
+  // in its own order.
   return [...byFile.values()]
-    .sort((a, b) => b.score - a.score || a.order - b.order)
+    .sort((a, b) => Number(b.exact) - Number(a.exact) || b.score - a.score || a.order - b.order)
     .slice(0, topN)
     .map((c) => ({
       result: c.result,

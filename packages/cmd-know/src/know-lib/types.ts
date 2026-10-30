@@ -35,6 +35,8 @@ export interface KnowItem {
 export interface BM25SearchResult {
   path: string;
   score: number;
+  /** The chunk's name is exactly an identifier in the query; ranks first through fusion. */
+  exact?: boolean;
   snippet: string;
   chunkOffset: number;
   title?: string;

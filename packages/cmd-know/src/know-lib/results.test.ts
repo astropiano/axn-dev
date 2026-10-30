@@ -64,6 +64,17 @@ describe("fuseFiles", () => {
     expect(fused.find((f) => f.result.path === "/b")!.fused).toBeCloseTo(1 / 62 + 1 / 61, 10);
   });
 
+  it("puts a file the query names exactly first, even when another list ranks it low", () => {
+    const named: SearchResult = { path: "/ModuleVersionHandler.java", chunkOffset: 0, score: 1, snippet: "the type", exact: true };
+    const bm25 = [named, bm("/a"), bm("/b")];
+    const vector = [vec("/a"), vec("/b"), vec("/c"), vec("/ModuleVersionHandler.java", 3)];
+
+    const fused = fuseFiles([bm25, vector], 3);
+
+    expect(fused[0].result.path).toBe("/ModuleVersionHandler.java");
+    expect(fused[0].result.snippet).toBe("the type");
+  });
+
   it("counts distinct chunks of a file across both lists", () => {
     const fused = fuseFiles([[bm("/a", 0), bm("/a", 1)], [vec("/a", 1), vec("/a", 2)]], 5);
     expect(fused).toEqual([expect.objectContaining({ moreInFile: 2 })]);

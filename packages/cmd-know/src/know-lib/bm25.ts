@@ -177,6 +177,7 @@ export function searchBM25Index(
         exact.push({
           path: item.path,
           score: topScore,
+          exact: true,
           snippet: bestSnippet(chunk, query),
           chunkOffset: chunk.offset,
           title: chunk.title,
