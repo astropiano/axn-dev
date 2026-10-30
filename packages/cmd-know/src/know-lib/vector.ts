@@ -1,3 +1,9 @@
+import type { KnowItem, VectorSearchResult } from "./types.js";
+import type { VectorStore } from "./vectorStore.js";
+
+/** The model every vector is computed with; a store written with another model is re-embedded. */
+export const EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
+
 let embedder: any | null = null;
 
 /**
@@ -7,7 +13,7 @@ async function getEmbedder() {
   if (!embedder) {
     // @ts-ignore - Transformers.js has no types
     const { pipeline } = await import("@xenova/transformers");
-    embedder = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
+    embedder = await pipeline("feature-extraction", EMBEDDING_MODEL);
   }
   return embedder;
 }
@@ -27,7 +33,7 @@ export async function embedText(text: string): Promise<number[]> {
 /**
  * Compute cosine similarity between two vectors.
  */
-export function cosineSimilarity(a: number[], b: number[]): number {
+export function cosineSimilarity(a: ArrayLike<number>, b: ArrayLike<number>): number {
   if (a.length !== b.length) throw new Error("Vector dimensions must match");
   let dot = 0;
   let normA = 0;
@@ -42,37 +48,50 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 /**
- * Brute-force cosine search: embed query, compare to all chunk vectors,
- * return top-N results with similarity scores.
+ * Brute-force cosine search: embed the query, then rank every stored vector.
  */
 export async function bruteForceCosineSearch(
-  items: import("./types.js").KnowItem[],
+  store: VectorStore,
+  items: KnowItem[],
   query: string,
   topN: number = 5
-): Promise<import("./types.js").VectorSearchResult[]> {
-  const queryVec = await embedText(query);
+): Promise<VectorSearchResult[]> {
+  return vectorSearch(store, items, await embedText(query), topN);
+}
 
-  const candidates: import("./types.js").VectorSearchResult[] = [];
+/**
+ * Rank every stored chunk vector against `queryVec` and return the top-N with
+ * similarity scores. Rows whose chunk no longer exists in `items` are skipped.
+ */
+export function vectorSearch(
+  store: VectorStore,
+  items: KnowItem[],
+  queryVec: ArrayLike<number>,
+  topN: number = 5
+): VectorSearchResult[] {
+  const itemsByPath = new Map(items.map((i) => [i.path, i]));
 
-  for (const item of items) {
-    for (const chunk of item.chunks) {
-      if (!chunk.embedding) continue;
-      const sim = cosineSimilarity(queryVec, chunk.embedding);
-      if (sim > 0) {
-        candidates.push({
-          path: item.path,
-          similarity: sim,
-          snippet: chunk.text,
-          chunkOffset: chunk.offset,
-          title: chunk.title,
-          titlePath: chunk.titlePath,
-          startLine: chunk.startLine,
-        });
-      }
-    }
+  const scored: { path: string; offset: number; similarity: number }[] = [];
+  for (const row of store.rows()) {
+    const similarity = cosineSimilarity(queryVec, row.vector);
+    if (similarity > 0) scored.push({ path: row.path, offset: row.offset, similarity });
   }
+  scored.sort((a, b) => b.similarity - a.similarity);
 
-  // Sort by similarity descending
-  candidates.sort((a, b) => b.similarity - a.similarity);
-  return candidates.slice(0, topN);
+  const results: VectorSearchResult[] = [];
+  for (const s of scored) {
+    if (results.length >= topN) break;
+    const chunk = itemsByPath.get(s.path)?.chunks[s.offset];
+    if (!chunk) continue;
+    results.push({
+      path: s.path,
+      similarity: s.similarity,
+      snippet: chunk.text,
+      chunkOffset: chunk.offset,
+      title: chunk.title,
+      titlePath: chunk.titlePath,
+      startLine: chunk.startLine,
+    });
+  }
+  return results;
 }

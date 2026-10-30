@@ -42,6 +42,11 @@ export function indexPath(axnRoot: string, corpusName: string): string {
   return join(corpusDir(axnRoot, corpusName), "index.json");
 }
 
+/** Base path of the corpus's vector store; the store writes `<base>.json` and `<base>.bin`. */
+export function vectorsBase(axnRoot: string, corpusName: string): string {
+  return join(corpusDir(axnRoot, corpusName), "vectors");
+}
+
 export function corpusConfigPath(axnRoot: string, corpusName: string): string {
   return join(corpusDir(axnRoot, corpusName), "corpus.yaml");
 }

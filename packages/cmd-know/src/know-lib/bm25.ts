@@ -5,8 +5,8 @@ import bm25 from "wink-bm25-text-search";
 import winkNLP from "wink-nlp";
 // @ts-ignore - wink-eng-lite-web-model types may not resolve
 import model from "wink-eng-lite-web-model";
-import type { KnowItem, Chunk, BM25SearchResult, VectorSearchResult, SearchResult, CorpusConfig } from "./types.js";
-import { embedText } from "./vector.js";
+import type { KnowItem, Chunk, BM25SearchResult, SearchResult, CorpusConfig } from "./types.js";
+import type { VectorStore } from "./vectorStore.js";
 
 const nlp = winkNLP(model);
 const its = nlp.its;
@@ -149,69 +149,26 @@ function bestSnippet(chunk: Chunk, query: string): string {
 }
 
 /**
- * Generate embeddings for all chunks in items that lack them.
+ * Ranked chunk lists for a query, one per engine the corpus uses: BM25 and/or
+ * vector. They stay separate because their scores are not comparable; the
+ * caller fuses them by rank.
+ * @param store the corpus's vectors; required for vector and hybrid corpora.
  */
-export async function generateEmbeddings(items: KnowItem[]): Promise<void> {
-  for (const item of items) {
-    for (const chunk of item.chunks) {
-      if (!chunk.embedding) {
-        chunk.embedding = await embedText(chunk.text);
-      }
-    }
-  }
-}
-
-/**
- * Unified indexing entry point: decides what to build based on corpus config.
- */
-export async function buildIndex(items: KnowItem[], indexPath: string, config: CorpusConfig): Promise<void> {
-  if (config.indexing === "vector" || config.indexing === "hybrid") {
-    await generateEmbeddings(items);
-  }
-  if (config.indexing === "bm25" || config.indexing === "hybrid") {
-    buildBM25Index(items, indexPath);
-  }
-  // For pure vector mode, we don't write a separate index file; embeddings live in item YAMLs.
-}
-
-/**
- * Unified search entry point: delegates to BM25, vector, or hybrid.
- */
-export async function search(
+export async function searchLists(
   indexPath: string,
   items: KnowItem[],
+  store: VectorStore | null,
   config: CorpusConfig,
   query: string,
   topN: number = 5
-): Promise<SearchResult[]> {
-  if (config.indexing === "bm25") {
-    return searchBM25Index(indexPath, items, query, topN);
+): Promise<SearchResult[][]> {
+  const lists: SearchResult[][] = [];
+  if (config.indexing === "bm25" || config.indexing === "hybrid") {
+    lists.push(searchBM25Index(indexPath, items, query, topN));
   }
-  if (config.indexing === "vector") {
+  if ((config.indexing === "vector" || config.indexing === "hybrid") && store) {
     const { bruteForceCosineSearch } = await import("./vector.js");
-    return bruteForceCosineSearch(items, query, topN);
+    lists.push(await bruteForceCosineSearch(store, items, query, topN));
   }
-  // hybrid: BM25 recall + vector re-rank
-  const bm25 = searchBM25Index(indexPath, items, query, topN * 2); // fetch more to re-rank
-  const { bruteForceCosineSearch } = await import("./vector.js");
-  const vec = await bruteForceCosineSearch(items, query, topN * 2);
-  // Merge by path+chunk, keep best score (BM25 score or similarity)
-  const map = new Map<string, SearchResult>();
-  for (const r of bm25) {
-    map.set(`${r.path}:${r.chunkOffset}`, r);
-  }
-  for (const r of vec) {
-    const key = `${r.path}:${r.chunkOffset}`;
-    const existing = map.get(key);
-    if (!existing || ("similarity" in r && r.similarity > (config.vector?.threshold ?? 0.7))) {
-      map.set(key, r);
-    }
-  }
-  // Sort by score (BM25) or similarity (vector); prioritize similarity for hybrid
-  const results = Array.from(map.values()).sort((a, b) => {
-    const aScore = "similarity" in a ? a.similarity : ("score" in a ? a.score : 0);
-    const bScore = "similarity" in b ? b.similarity : ("score" in b ? b.score : 0);
-    return bScore - aScore;
-  });
-  return results.slice(0, topN);
+  return lists;
 }

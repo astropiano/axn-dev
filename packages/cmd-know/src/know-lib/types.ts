@@ -19,6 +19,7 @@ export interface Chunk {
   titlePath?: string;   // dotted/qualified path, e.g. "MyClass.myMethod"
   startLine?: number;   // 1-based, inclusive; set by extractors that parse source
   endLine?: number;
+  /** Legacy: vectors stored inline before the corpus vector store. Read once to migrate them, then removed. */
   embedding?: number[];
 }
 

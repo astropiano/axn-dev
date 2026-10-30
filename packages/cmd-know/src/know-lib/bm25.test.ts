@@ -2,8 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildBM25Index, buildIndex, search } from "./bm25.js";
-import type { CorpusConfig } from "./types.js";
+import { buildBM25Index, searchBM25Index } from "./bm25.js";
 import type { KnowItem } from "./types.js";
 
 const TMP = join(tmpdir(), "axn-know-bm25-test-" + process.pid);
@@ -59,12 +58,11 @@ describe("buildBM25Index", () => {
   });
 });
 
-describe("search (BM25 mode)", () => {
-  const config: CorpusConfig = { name: "test", indexing: "bm25" };
+describe("searchBM25Index", () => {
   beforeAll(() => buildBM25Index(items, IDX));
 
   it("returns results for a matching query", async () => {
-    const results = await search(IDX, items, config, "docker compose", 5);
+    const results = searchBM25Index(IDX, items, "docker compose", 5);
     expect(results.length).toBeGreaterThan(0);
     if ("score" in results[0]) {
       expect(results[0].path).toBe("/docs/docker.md");
@@ -72,7 +70,7 @@ describe("search (BM25 mode)", () => {
   });
 
   it("top result for raspberry query is raspberry doc", async () => {
-    const results = await search(IDX, items, config, "raspberry pi boot", 5);
+    const results = searchBM25Index(IDX, items, "raspberry pi boot", 5);
     expect(results.length).toBeGreaterThan(0);
     if ("score" in results[0]) {
       expect(results[0].path).toBe("/docs/raspberry.md");
@@ -80,22 +78,22 @@ describe("search (BM25 mode)", () => {
   });
 
   it("returns snippet text", async () => {
-    const results = await search(IDX, items, config, "keycloak authentication", 5);
+    const results = searchBM25Index(IDX, items, "keycloak authentication", 5);
     expect(results[0].snippet.length).toBeGreaterThan(0);
   });
 
   it("respects topN limit", async () => {
-    const results = await search(IDX, items, config, "the", 2);
+    const results = searchBM25Index(IDX, items, "the", 2);
     expect(results.length).toBeLessThanOrEqual(2);
   });
 
   it("returns empty array when index does not exist", async () => {
-    const results = await search(join(TMP, "nonexistent.json"), items, config, "query", 5);
+    const results = searchBM25Index(join(TMP, "nonexistent.json"), items, "query", 5);
     expect(results).toEqual([]);
   });
 
   it("snippet is max 300 chars", async () => {
-    const results = await search(IDX, items, config, "docker", 5);
+    const results = searchBM25Index(IDX, items, "docker", 5);
     for (const r of results) {
       expect(r.snippet.length).toBeLessThanOrEqual(300);
     }

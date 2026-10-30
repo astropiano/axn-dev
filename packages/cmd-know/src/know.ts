@@ -10,12 +10,15 @@ import {
   loadAllItems,
   loadCorpusConfig,
   indexPath,
+  vectorsBase,
   type Scope,
 } from "./know-lib/storage.js";
 import { hashFile, gitInfo } from "./know-lib/hash.js";
 import { extractChunks } from "./know-lib/chunker.js";
-import { buildIndex, search } from "./know-lib/bm25.js";
-import { groupByFile, isTestPath } from "./know-lib/results.js";
+import { buildBM25Index, searchLists } from "./know-lib/bm25.js";
+import { fuseFiles, isTestPath } from "./know-lib/results.js";
+import { syncVectors } from "./know-lib/vectorIndex.js";
+import { VectorStore } from "./know-lib/vectorStore.js";
 import type { IndexingTechnique, VectorConfig, SearchResult } from "./know-lib/types.js";
 import type { KnowItem } from "./know-lib/types.js";
 
@@ -236,10 +239,30 @@ Examples:
     if (!config) throw new Error(`Corpus config not found for '${corpus}'`);
     console.log(`\nBuilding ${config.indexing} index for corpus '${corpus}'...`);
     const idxPath = indexPath(axnRoot, corpus);
-    // A full BM25 rebuild is most of an unchanged run's time; other modes still
-    // go through buildIndex for any missing embeddings.
-    if (config.indexing !== "bm25" || contentChanged || !existsSync(idxPath)) {
-      await buildIndex(updatedItems.filter((i) => i.chunks.length > 0), idxPath, config);
+    const withChunks = updatedItems.filter((i) => i.chunks.length > 0);
+
+    // A full BM25 rebuild is most of an unchanged run's time.
+    if ((config.indexing === "bm25" || config.indexing === "hybrid") && (contentChanged || !existsSync(idxPath))) {
+      buildBM25Index(withChunks, idxPath);
+    }
+
+    if (config.indexing === "vector" || config.indexing === "hybrid") {
+      const tty = Boolean(process.stderr.isTTY);
+      const vectors = await syncVectors(withChunks, vectorsBase(axnRoot, corpus), {
+        onProgress: (done, total) => {
+          if (total > 0) process.stderr.write(`  embedding ${done}/${total} chunks${tty ? "\r" : "\n"}`);
+        },
+        onError: (message) => console.warn(`  ${message}`),
+      });
+      if (tty) process.stderr.write("\n");
+      // Their inline vectors now live in the store; rewriting drops them from the YAML.
+      for (const item of vectors.migrated) saveItem(axnRoot, corpus, item);
+      console.log(
+        `Vectors: ${vectors.embedded} embedded, ${vectors.removed} file(s) removed` +
+          (vectors.migrated.length > 0 ? `, ${vectors.migrated.length} file(s) moved out of the item YAMLs` : "") +
+          (vectors.failed > 0 ? `, ${vectors.failed} failed (retried on the next index)` : "") +
+          ".",
+      );
     }
 
     console.log(
@@ -286,7 +309,7 @@ Examples:
     // Chunks, not files, are ranked: fetch deep enough that grouping by file and
     // hiding tests still leave topN files.
     const fetchN = Math.max(topN * 20, 100);
-    let allResults: SearchResult[] = [];
+    const lists: SearchResult[][] = [];
     let searched = 0;
     let skipped = 0;
 
@@ -300,32 +323,26 @@ Examples:
 
       const idxPath = indexPath(axnRoot, corpus);
 
-      if (config.indexing === "vector") {
-        const items = loadAllItems(axnRoot, corpus);
-        const hasEmbeddings = items.some((i) => i.chunks.some((c) => c.embedding));
-        if (!hasEmbeddings) {
-          console.warn(`No embeddings found for corpus '${corpus}' (${scope}), skipping.`);
-          skipped++;
-          continue;
-        }
-      } else {
-        if (!existsSync(idxPath)) {
-          console.warn(`No index found for corpus '${corpus}' (${scope}), skipping.`);
-          skipped++;
-          continue;
-        }
+      const store = config.indexing === "bm25" ? null : VectorStore.load(vectorsBase(axnRoot, corpus));
+      const missing = [
+        config.indexing !== "vector" && !existsSync(idxPath) ? "BM25 index" : null,
+        config.indexing !== "bm25" && !store ? "vectors" : null,
+      ].filter(Boolean);
+      if (missing.length > 0) {
+        console.warn(`No ${missing.join(" or ")} for corpus '${corpus}' (${scope}); run 'axn-dev know index'. Skipping.`);
+        skipped++;
+        continue;
       }
 
       const items = loadAllItems(axnRoot, corpus);
-      const results = await search(idxPath, items, config, query, fetchN);
-      for (const r of results) {
-        r.corpus = corpus;
+      for (const list of await searchLists(idxPath, items, store, config, query, fetchN)) {
+        for (const r of list) r.corpus = corpus;
+        lists.push(list);
       }
-      allResults = allResults.concat(results);
       searched++;
     }
 
-    if (allResults.length === 0) {
+    if (lists.every((l) => l.length === 0)) {
       if (searched === 0) {
         console.log(`No searchable corpora found for the query. ${skipped} were skipped.`);
       } else {
@@ -334,10 +351,12 @@ Examples:
       return;
     }
 
-    allResults.sort((a, b) => this.resultScore(b) - this.resultScore(a));
-    const shown = includeTests ? allResults : allResults.filter((r) => !isTestPath(r.path));
-    const hiddenTests = allResults.length - shown.length;
-    const top = groupByFile(shown).slice(0, topN);
+    // Tests leave before fusion, so they take no ranks from production files.
+    const shown = lists.map((l) => (includeTests ? l : l.filter((r) => !isTestPath(r.path))));
+    const hiddenTests = new Set(
+      lists.flat().filter((r) => !includeTests && isTestPath(r.path)).map((r) => `${r.corpus}:${r.path}:${r.chunkOffset}`),
+    ).size;
+    const top = fuseFiles(shown, topN);
     const testHint = hiddenTests > 0 ? `${hiddenTests} matching test chunk(s) hidden; --include-tests shows them.` : "";
 
     if (top.length === 0) {
@@ -348,9 +367,11 @@ Examples:
     console.log(`\n\x1b[32mTop ${top.length} result(s) for:\x1b[0m "${query}"\n`);
 
     for (let i = 0; i < top.length; i++) {
-      const { result: r, moreInFile } = top[i];
-      const score = "score" in r ? r.score.toFixed(3) : ("similarity" in r ? r.similarity.toFixed(3) : "0");
-      const label = "score" in r ? "score" : ("similarity" in r ? "similarity" : "score");
+      const { result: r, moreInFile, fused } = top[i];
+      const [label, value] = fused !== undefined
+        ? ["rrf", fused]
+        : "score" in r ? ["score", r.score] : ["similarity", r.similarity];
+      const score = value.toFixed(3);
       const title = r.titlePath ?? r.title;
       const corpusTag = r.corpus ? ` [${r.corpus}]` : "";
       const location = r.startLine ? `${r.path}:${r.startLine}` : r.path;
@@ -366,10 +387,6 @@ Examples:
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
-
-  private resultScore(r: SearchResult): number {
-    return "similarity" in r ? r.similarity : ("score" in r ? r.score : 0);
-  }
 
   private parseScope(val: string): Scope {
     if (val === "global" || val === "project") return val;
