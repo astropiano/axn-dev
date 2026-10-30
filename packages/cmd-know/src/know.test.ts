@@ -292,3 +292,40 @@ describe("know find --then", () => {
     await expect(run("find", "kangaroo", "-c", "nav", "--then", "siblings")).rejects.toThrow("--then must be one of");
   });
 });
+
+describe("know add-deps / deps", () => {
+  const TREE = join(TMP, "tree.txt");
+
+  beforeAll(async () => {
+    writeFileSync(
+      TREE,
+      "[INFO] info.magnolia:webapp:war:6.4\n" +
+        "[INFO] +- info.magnolia:magnolia-core:jar:6.4:compile\n" +
+        "[INFO] |  \\- org.apache.jackrabbit:jackrabbit-core:jar:2.20.0:compile\n" +
+        "[INFO] \\- info.magnolia:magnolia-rendering:jar:6.4:compile\n",
+    );
+    await run("add-deps", TREE, "-c", "deps");
+  });
+
+  it("lists what depends on an artifact", async () => {
+    const out = await output("deps", "jackrabbit-core", "--reverse", "-c", "deps");
+    expect(out).toContain("Depended on by org.apache.jackrabbit:jackrabbit-core");
+    expect(out).toMatch(/1  info\.magnolia:magnolia-core/);
+    expect(out).toMatch(/2  info\.magnolia:webapp.*via info\.magnolia:magnolia-core/);
+  });
+
+  it("shows the chain from one artifact to another", async () => {
+    expect(await output("deps", "webapp", "--path-to", "jackrabbit-core", "-c", "deps")).toBe(
+      "info.magnolia:webapp\n  -> info.magnolia:magnolia-core\n  -> org.apache.jackrabbit:jackrabbit-core",
+    );
+  });
+
+  it("asks for one artifact when a query matches several", async () => {
+    const out = await output("deps", "magnolia", "-c", "deps");
+    expect(out).toContain("'magnolia' matches 3 artifacts");
+  });
+
+  it("says how to load a graph when the corpus has none", async () => {
+    await expect(run("deps", "x", "-c", "nodeps")).rejects.toThrow("know add-deps");
+  });
+});

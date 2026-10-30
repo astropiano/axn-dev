@@ -1,6 +1,7 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
-import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { execFileSync, spawnSync } from "node:child_process";
 import { NAVIGATION_QUERIES, navigateCode, type Command, type NavigationQuery } from "@axn-dev/core";
 import {
   resolveAxnDevRoot,
@@ -11,6 +12,7 @@ import {
   loadCorpusConfig,
   indexPath,
   vectorsBase,
+  depsPath,
   type Scope,
 } from "./know-lib/storage.js";
 import { hashFile, gitInfo } from "./know-lib/hash.js";
@@ -19,15 +21,16 @@ import { buildBM25Index, isCurrentBM25Index, searchLists } from "./know-lib/bm25
 import { fuseFiles, isTestPath } from "./know-lib/results.js";
 import { codeLocationOf } from "./know-lib/codeLocation.js";
 import { typeReferences } from "./know-lib/typeRefs.js";
+import { dependencyPath, findArtifacts, mergeGraphs, parseDependencyTree, reach, type DepGraph } from "./know-lib/deps.js";
 import { syncVectors } from "./know-lib/vectorIndex.js";
 import { VectorStore } from "./know-lib/vectorStore.js";
 import type { IndexingTechnique, VectorConfig, SearchResult } from "./know-lib/types.js";
 import type { KnowItem } from "./know-lib/types.js";
 
-const KNOW_SUBCOMMANDS = ["add", "index", "find"];
+const KNOW_SUBCOMMANDS = ["add", "index", "find", "add-deps", "deps"];
 const KNOW_FLAGS = [
   "--scope", "-s", "--corpus", "-c", "--indexing", "-i",
-  "--show-toplevel", "-n", "-q", "-C", "--include-tests", "--then", "--help", "-h",
+  "--show-toplevel", "-n", "-q", "-C", "--include-tests", "--then", "--reverse", "--depth", "--path-to", "--help", "-h",
 ];
 
 export class KnowCommand implements Command {
@@ -50,6 +53,10 @@ Subcommands:
   add <path>         Track a file (or glob/directory) in a corpus
   index              Re-index changed files in a corpus
   find "<query>"     Search the index and show top matching snippets
+  add-deps <path>    Store a Maven dependency graph in a corpus: a project
+                     directory (runs mvn dependency:tree) or a file of its
+                     output. Repeat to merge several projects.
+  deps <artifact>    What an artifact depends on, transitively
 
 Options:
   --scope, -s <global|project>   Storage scope (default: global)
@@ -64,6 +71,10 @@ Options:
   --then <callers|callees|implementations|references>
                                  Follow the top code hit with a code navigator
                                  plugin, e.g. @axn-dev/know-nav-ripwire (find only)
+  --reverse                      What depends on the artifact instead (deps only)
+  --depth <n>                    Stop after n hops (deps only; default: all)
+  --path-to <artifact>           Why the artifact depends on another: the
+                                 shortest chain (deps only)
   --help, -h                     Show this help
 
 Examples:
@@ -75,6 +86,9 @@ Examples:
   axn-dev know find "docker compose" -n 10
   axn-dev know find "auth" -c axn-dev-cli -c my-server
   axn-dev know find "apply module update deltas" --then callers
+  axn-dev know add-deps ~/git/dx-core
+  axn-dev know deps magnolia-core --reverse --depth 1
+  axn-dev know deps magnolia-dx-core-webapp --path-to jackrabbit-core
 `;
   }
 
@@ -90,6 +104,8 @@ Examples:
       case "add":   return this.add(rest);
       case "index": return this.index(rest);
       case "find":  return this.find(rest);
+      case "add-deps": return this.addDeps(rest);
+      case "deps":  return this.deps(rest);
       default:
         throw new Error(
           `Unknown know subcommand: '${sub}'\nRun 'axn-dev know --help' for usage.`
@@ -448,6 +464,125 @@ Examples:
     const hidden = all.length - hits.length;
     if (hidden > 0) console.log(`\x1b[2m  ${hidden} hit(s) in test sources hidden; --include-tests shows them.\x1b[0m`);
     for (const c of navigated?.caveats ?? []) console.log(`\x1b[33m  ⚠ ${c}\x1b[0m`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // add-deps / deps
+  // ---------------------------------------------------------------------------
+
+  private async addDeps(args: string[]): Promise<void> {
+    const { scope, corpus, positional } = this.corpusArgs(args);
+    if (!positional) throw new Error("Usage: axn-dev know add-deps <project-dir|tree-file> [options]");
+    const source = resolve(process.cwd(), positional);
+    if (!existsSync(source)) throw new Error(`Path does not exist: ${source}`);
+
+    const text = statSync(source).isDirectory() ? this.runDependencyTree(source) : readFileSync(source, "utf-8");
+    const parsed = parseDependencyTree(text);
+    if (parsed.artifacts.length === 0) throw new Error(`No dependency tree found in ${source}`);
+
+    const axnRoot = resolveAxnDevRoot(scope);
+    ensureCorpus(axnRoot, corpus);
+    const path = depsPath(axnRoot, corpus);
+    const graph = existsSync(path) ? mergeGraphs(this.readDeps(path), parsed) : parsed;
+    writeFileSync(path, JSON.stringify(graph), "utf-8");
+    const modules = parsed.artifacts.filter((a) => a.module).length;
+    console.log(`Read ${modules} module(s), ${parsed.artifacts.length} artifacts, ${parsed.edges.length} dependencies from ${source}.`);
+    console.log(`Corpus '${corpus}' now holds ${graph.artifacts.length} artifacts, ${graph.edges.length} dependencies.`);
+  }
+
+  /** `mvn dependency:tree` over a project; every module's tree, appended to one file. */
+  private runDependencyTree(dir: string): string {
+    const tmp = mkdtempSync(join(tmpdir(), "axn-know-deps-"));
+    const out = join(tmp, "tree.txt");
+    try {
+      console.log(`Running mvn dependency:tree in ${dir} ...`);
+      // -Dverbose: without it each artifact appears once per module, and most edges are missing.
+      const res = spawnSync("mvn", ["-q", "dependency:tree", "-Dverbose", `-DoutputFile=${out}`, "-DappendOutput=true"], {
+        cwd: dir,
+        encoding: "utf-8",
+      });
+      if (res.error) throw new Error(`mvn is not available: ${res.error.message}`);
+      if (res.status !== 0) {
+        const tail = `${res.stdout}\n${res.stderr}`.trim().split("\n").slice(-5).join("\n");
+        throw new Error(`mvn dependency:tree failed (exit ${res.status}):\n${tail}`);
+      }
+      return readFileSync(out, "utf-8");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  private async deps(args: string[]): Promise<void> {
+    let reverse = false;
+    let maxDepth = Infinity;
+    let pathTo: string | null = null;
+    const rest: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "--reverse") reverse = true;
+      else if (a === "--depth") {
+        maxDepth = parseInt(args[++i], 10);
+        if (isNaN(maxDepth) || maxDepth < 1) throw new Error("--depth must be a positive integer");
+      } else if (a === "--path-to") pathTo = args[++i];
+      else rest.push(a);
+    }
+    const { scope, corpus, positional } = this.corpusArgs(rest);
+    if (!positional) throw new Error("Usage: axn-dev know deps <artifact> [--reverse] [--depth n] [--path-to <artifact>] [options]");
+
+    const path = depsPath(resolveAxnDevRoot(scope), corpus);
+    if (!existsSync(path)) throw new Error(`No dependency graph in corpus '${corpus}' (${scope}). Run 'axn-dev know add-deps <project-dir>' first.`);
+    const graph = this.readDeps(path);
+    const start = this.oneArtifact(graph, positional);
+    if (!start) return;
+
+    if (pathTo) {
+      const target = this.oneArtifact(graph, pathTo);
+      if (!target) return;
+      const chain = dependencyPath(graph, start, target);
+      console.log(chain
+        ? `${chain.join("\n  -> ")}`
+        : `${start} does not depend on ${target} in this graph.`);
+      return;
+    }
+
+    const reached = reach(graph, start, reverse, maxDepth);
+    const versions = new Map(graph.artifacts.map((a) => [a.key, a.versions.join(", ")]));
+    console.log(`\n\x1b[32m${reverse ? "Depended on by" : "Depends on"} ${start}\x1b[0m\x1b[2m (${reached.length}${Number.isFinite(maxDepth) ? `, up to depth ${maxDepth}` : ", transitive"})\x1b[0m`);
+    for (const r of reached) {
+      const via = r.depth > 1 ? `\x1b[2m  via ${r.via}\x1b[0m` : "";
+      console.log(`  ${r.depth}  ${r.key}\x1b[2m ${versions.get(r.key)} (${r.scope})\x1b[0m${via}`);
+    }
+  }
+
+  /** The single artifact a query names, or null after listing the candidates. */
+  private oneArtifact(graph: DepGraph, query: string): string | null {
+    const found = findArtifacts(graph, query);
+    if (found.length === 1) return found[0].key;
+    if (found.length === 0) {
+      console.log(`No artifact matches '${query}'.`);
+    } else {
+      console.log(`'${query}' matches ${found.length} artifacts; name one:`);
+      for (const a of found.slice(0, 20)) console.log(`  ${a.key}`);
+    }
+    return null;
+  }
+
+  private readDeps(path: string): DepGraph {
+    return JSON.parse(readFileSync(path, "utf-8")) as DepGraph;
+  }
+
+  /** --scope/--corpus and the one positional argument shared by add-deps and deps. */
+  private corpusArgs(args: string[]): { scope: Scope; corpus: string; positional: string | null } {
+    let scope: Scope = "global";
+    let corpusName: string | null = null;
+    let positional: string | null = null;
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "--scope" || a === "-s") scope = this.parseScope(args[++i]);
+      else if (a === "--corpus" || a === "-c") corpusName = args[++i];
+      else if (!a.startsWith("-")) positional = a;
+    }
+    return { scope, corpus: corpusName ?? (scope === "global" ? "personal" : "project"), positional };
   }
 
   // ---------------------------------------------------------------------------

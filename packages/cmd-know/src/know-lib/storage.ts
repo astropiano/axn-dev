@@ -42,6 +42,11 @@ export function indexPath(axnRoot: string, corpusName: string): string {
   return join(corpusDir(axnRoot, corpusName), "index.json");
 }
 
+/** The corpus's Maven dependency graph, written by `know add-deps`. */
+export function depsPath(axnRoot: string, corpusName: string): string {
+  return join(corpusDir(axnRoot, corpusName), "deps.json");
+}
+
 /** Base path of the corpus's vector store; the store writes `<base>.json` and `<base>.bin`. */
 export function vectorsBase(axnRoot: string, corpusName: string): string {
   return join(corpusDir(axnRoot, corpusName), "vectors");
