@@ -15,7 +15,7 @@ import {
 } from "./know-lib/storage.js";
 import { hashFile, gitInfo } from "./know-lib/hash.js";
 import { extractChunks } from "./know-lib/chunker.js";
-import { buildBM25Index, searchLists } from "./know-lib/bm25.js";
+import { buildBM25Index, isCurrentBM25Index, searchLists } from "./know-lib/bm25.js";
 import { fuseFiles, isTestPath } from "./know-lib/results.js";
 import { syncVectors } from "./know-lib/vectorIndex.js";
 import { VectorStore } from "./know-lib/vectorStore.js";
@@ -242,7 +242,7 @@ Examples:
     const withChunks = updatedItems.filter((i) => i.chunks.length > 0);
 
     // A full BM25 rebuild is most of an unchanged run's time.
-    if ((config.indexing === "bm25" || config.indexing === "hybrid") && (contentChanged || !existsSync(idxPath))) {
+    if ((config.indexing === "bm25" || config.indexing === "hybrid") && (contentChanged || !isCurrentBM25Index(idxPath))) {
       buildBM25Index(withChunks, idxPath);
     }
 
