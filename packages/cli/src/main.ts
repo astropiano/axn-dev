@@ -16,10 +16,12 @@ import {
   pluginFlowAdapters,
   pluginFlowJudges,
   pluginDeviceEnvResolvers,
+  pluginCodeNavigators,
   registerScenarioDriver,
   registerFlowAdapter,
   registerFlowJudge,
   registerDeviceEnvResolver,
+  registerCodeNavigator,
 } from "@axn-dev/core";
 import { InitCommand } from "./commands/init.js";
 import { SetupCommand } from "./commands/setup.js";
@@ -67,6 +69,10 @@ for (const pkg of plugins) {
   // Device-env resolvers — specs register now, module loads on first -i use.
   for (const spec of pluginDeviceEnvResolvers(pkg)) {
     registerDeviceEnvResolver(spec);
+  }
+  // Code navigators — specs register now, module loads on first navigation.
+  for (const spec of pluginCodeNavigators(pkg)) {
+    registerCodeNavigator(spec);
   }
   for (const cmd of pluginCommands(pkg)) {
     if (registry.get(cmd.name)) {

@@ -67,6 +67,7 @@ interface InstalledManifest {
   scenarioTypes?: { type: string }[];
   flowAdapters?: { name: string; tags?: string[] }[];
   deviceEnvResolvers?: { name: string }[];
+  codeNavigators?: { name: string; extensions?: string[] }[];
   skills?: string;
 }
 
@@ -91,7 +92,7 @@ export function installPlugin(spec: string): void {
   };
   const manifest = pkgJson["axn-dev"];
   // Valid contributions: commands, scenario types, flow adapters,
-  // device-env resolvers, or a skills dir (explicit "skills" path or the
+  // device-env resolvers, code navigators, or a skills dir (explicit "skills" path or the
   // implicit default "skills/").
   const skillsDir = manifest?.skills ?? "skills";
   const hasSkills = !!manifest && existsSync(join(pkgDir, skillsDir));
@@ -102,6 +103,7 @@ export function installPlugin(spec: string): void {
       !manifest.scenarioTypes?.length &&
       !manifest.flowAdapters?.length &&
       !manifest.deviceEnvResolvers?.length &&
+      !manifest.codeNavigators?.length &&
       !hasSkills)
   ) {
     runNpm(["uninstall", "--prefix", PLUGINS_DIR, name]);
@@ -124,6 +126,9 @@ export function installPlugin(spec: string): void {
   }
   for (const r of manifest.deviceEnvResolvers ?? []) {
     console.log(`  device-env    ${r.name}`);
+  }
+  for (const n of manifest.codeNavigators ?? []) {
+    console.log(`  navigator     ${n.name}${n.extensions?.length ? ` (${n.extensions.join(", ")})` : ""}`);
   }
   if (existsSync(join(pkgDir, manifest.skills ?? "skills"))) {
     console.log(`  skills        ${join(pkgDir, manifest.skills ?? "skills")}`);

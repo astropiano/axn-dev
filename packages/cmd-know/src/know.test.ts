@@ -3,6 +3,7 @@ import { mkdirSync, rmSync, writeFileSync, existsSync, readdirSync, statSync } f
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { registerCodeNavigator } from "@axn-dev/core";
 import { KnowCommand } from "./know.js";
 
 /**
@@ -203,5 +204,65 @@ describe("know find — one line per file, tests hidden", () => {
 
   it("shows test sources with --include-tests", async () => {
     expect(await output("find", "wombat", "-c", "grouping", "--include-tests")).toContain("__tests__");
+  });
+});
+
+describe("know find --then", () => {
+  const PROJ = join(TMP, "navproj");
+  const NAV = join(TMP, "fake-nav.mjs");
+
+  beforeAll(async () => {
+    mkdirSync(join(PROJ, "src"), { recursive: true });
+    writeFileSync(
+      join(PROJ, "src", "Pouch.java"),
+      "package zoo;\n\npublic class Pouch {\n    void carry(String joey) {\n        kangaroo(joey);\n    }\n}\n",
+    );
+    writeFileSync(join(PROJ, "src", "notes.md"), "# Notes\n\nplatypus facts");
+    writeFileSync(join(PROJ, "src", "util.ts"), "export class Wallaby {\n  hop() { return 'numbat'; }\n}\n");
+    // Echoes what it was asked, plus one hit in a test source.
+    writeFileSync(
+      NAV,
+      `export const navigator = {
+        async navigate(query, location) {
+          return {
+            navigator: "fake",
+            hits: [
+              { path: "/elsewhere/Zoo.java", line: 7, symbol: query + " of " + location.typeName + "." + location.memberName + "@" + location.line },
+              { path: "/elsewhere/src/test/ZooTest.java", line: 3, symbol: "inTest" },
+            ],
+            caveats: ["a lower bound"],
+          };
+        },
+      };`,
+    );
+    registerCodeNavigator({ name: "fake", extensions: [".java"], entry: NAV });
+    await run("add", PROJ, "-c", "nav");
+    await run("index", "-c", "nav");
+  });
+
+  it("hands the top code hit's type, member and line to the navigator and prints its hits and caveats", async () => {
+    // "carry" is in the method's title, so the method outranks its class.
+    const out = await output("find", "carry kangaroo", "-c", "nav", "--then", "callers");
+
+    expect(out).toContain("Callers of Pouch.carry");
+    expect(out).toContain("/elsewhere/Zoo.java:7 — callers of Pouch.carry@4");
+    expect(out).toContain("⚠ a lower bound");
+  });
+
+  it("hides navigator hits in test sources unless --include-tests", async () => {
+    expect(await output("find", "carry kangaroo", "-c", "nav", "--then", "callers")).toContain("1 hit(s) in test sources hidden");
+    expect(await output("find", "kangaroo", "-c", "nav", "--then", "callers", "--include-tests")).toContain("ZooTest.java");
+  });
+
+  it("says so when no result is a code symbol", async () => {
+    expect(await output("find", "platypus", "-c", "nav", "--then", "callers")).toContain("none of the results is a code symbol");
+  });
+
+  it("says so when no navigator serves the file", async () => {
+    expect(await output("find", "numbat", "-c", "nav", "--then", "callers")).toContain("no code navigator serves");
+  });
+
+  it("rejects an unknown navigation", async () => {
+    await expect(run("find", "kangaroo", "-c", "nav", "--then", "siblings")).rejects.toThrow("--then must be one of");
   });
 });

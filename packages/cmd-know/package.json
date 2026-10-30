@@ -34,6 +34,7 @@
           "-i",
           "--show-toplevel",
           "--include-tests",
+          "--then",
           "-n",
           "-q",
           "-C",

@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
-import type { Command } from "@axn-dev/core";
+import { NAVIGATION_QUERIES, navigateCode, type Command, type NavigationQuery } from "@axn-dev/core";
 import {
   resolveAxnDevRoot,
   ensureCorpus,
@@ -17,6 +17,7 @@ import { hashFile, gitInfo } from "./know-lib/hash.js";
 import { extractChunks } from "./know-lib/chunker.js";
 import { buildBM25Index, isCurrentBM25Index, searchLists } from "./know-lib/bm25.js";
 import { fuseFiles, isTestPath } from "./know-lib/results.js";
+import { codeLocationOf } from "./know-lib/codeLocation.js";
 import { syncVectors } from "./know-lib/vectorIndex.js";
 import { VectorStore } from "./know-lib/vectorStore.js";
 import type { IndexingTechnique, VectorConfig, SearchResult } from "./know-lib/types.js";
@@ -25,7 +26,7 @@ import type { KnowItem } from "./know-lib/types.js";
 const KNOW_SUBCOMMANDS = ["add", "index", "find"];
 const KNOW_FLAGS = [
   "--scope", "-s", "--corpus", "-c", "--indexing", "-i",
-  "--show-toplevel", "-n", "-q", "-C", "--include-tests", "--help", "-h",
+  "--show-toplevel", "-n", "-q", "-C", "--include-tests", "--then", "--help", "-h",
 ];
 
 export class KnowCommand implements Command {
@@ -59,6 +60,9 @@ Options:
   -n <number>                    Number of files to show (default: 5, find only).
                                  Each file is shown once, at its best match.
   --include-tests                Also show test sources (find only; hidden by default)
+  --then <callers|callees|implementations|references>
+                                 Follow the top code hit with a code navigator
+                                 plugin, e.g. @axn-dev/know-nav-ripwire (find only)
   --help, -h                     Show this help
 
 Examples:
@@ -69,6 +73,7 @@ Examples:
   axn-dev know find "how to deploy devices"
   axn-dev know find "docker compose" -n 10
   axn-dev know find "auth" -c axn-dev-cli -c my-server
+  axn-dev know find "apply module update deltas" --then callers
 `;
   }
 
@@ -280,6 +285,7 @@ Examples:
     const corpusNames: string[] = [];
     let topN = 5;
     let includeTests = false;
+    let then: NavigationQuery | null = null;
 
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
@@ -289,6 +295,12 @@ Examples:
         corpusNames.push(args[++i]);
       } else if (a === "--include-tests") {
         includeTests = true;
+      } else if (a === "--then") {
+        const q = args[++i];
+        if (!NAVIGATION_QUERIES.includes(q as NavigationQuery)) {
+          throw new Error(`--then must be one of: ${NAVIGATION_QUERIES.join(", ")}`);
+        }
+        then = q as NavigationQuery;
       } else if (a === "-n") {
         topN = parseInt(args[++i], 10);
         if (isNaN(topN) || topN < 1) throw new Error("-n must be a positive integer");
@@ -382,6 +394,36 @@ Examples:
       console.log("");
     }
     if (testHint) console.log(`\x1b[2m${testHint}\x1b[0m`);
+    if (then) await this.followTopHit(then, top.map((t) => t.result), includeTests);
+  }
+
+  /**
+   * Hand the first code symbol among the hits to a code navigator and print
+   * what it finds — the step from "where is it" to "what touches it".
+   */
+  private async followTopHit(query: NavigationQuery, results: SearchResult[], includeTests: boolean): Promise<void> {
+    const location = results.map(codeLocationOf).find((l) => l !== null);
+    if (!location) {
+      console.log(`\n--then ${query}: none of the results is a code symbol.`);
+      return;
+    }
+    // Implementations belong to the type, even when the hit was one of its members.
+    const symbol = location.memberName && query !== "implementations" ? `${location.typeName}.${location.memberName}` : location.typeName;
+    const result = await navigateCode(query, location);
+    if (!result) {
+      console.log(`\n--then ${query}: no code navigator serves ${location.path}. Install one, e.g. 'axn-dev install --plugin @axn-dev/know-nav-ripwire'.`);
+      return;
+    }
+
+    const hits = includeTests ? result.hits : result.hits.filter((h) => !isTestPath(h.path));
+    console.log(`\n\x1b[32m${query[0].toUpperCase()}${query.slice(1)} of ${symbol}\x1b[0m\x1b[2m (${result.navigator}, ${hits.length} hit(s))\x1b[0m`);
+    for (const h of hits) {
+      const where = h.line ? `${h.path}:${h.line}` : h.path;
+      console.log(`  ${where}${h.symbol ? ` — ${h.symbol}` : ""}${h.kind ? `\x1b[2m (${h.kind})\x1b[0m` : ""}`);
+    }
+    const hidden = result.hits.length - hits.length;
+    if (hidden > 0) console.log(`\x1b[2m  ${hidden} hit(s) in test sources hidden; --include-tests shows them.\x1b[0m`);
+    for (const c of result.caveats) console.log(`\x1b[33m  ⚠ ${c}\x1b[0m`);
   }
 
   // ---------------------------------------------------------------------------

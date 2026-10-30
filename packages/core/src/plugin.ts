@@ -78,6 +78,18 @@ export interface AxnDevManifest {
   judges?: PluginJudgeSpec[];
   /** Device-env resolvers contributed by this package. */
   deviceEnvResolvers?: PluginDeviceEnvSpec[];
+  /** Code navigators contributed by this package. */
+  codeNavigators?: PluginCodeNavigatorSpec[];
+}
+
+/** A code navigator contributed by a plugin package. The navigator module
+ * (see `entry`, default: the plugin entry) exports `navigator` or a default
+ * `CodeNavigator`. `extensions` (e.g. `.java`) are the files it serves; omit
+ * for every file. */
+export interface PluginCodeNavigatorSpec {
+  name: string;
+  extensions?: string[];
+  entry?: string;
 }
 
 /** A flow judge contributed by a plugin package. The judge module (see
@@ -166,6 +178,7 @@ export function discoverPlugins(extraRoots: string[] = []): PluginPackage[] {
         !manifest?.flowAdapters?.length &&
         !manifest?.judges?.length &&
         !manifest?.deviceEnvResolvers?.length &&
+        !manifest?.codeNavigators?.length &&
         // skills-only plugins: manifest with an existing skills dir
         !(manifest && existsSync(join(dir, manifest.skills ?? "skills")))
       ) {
@@ -347,6 +360,16 @@ export function pluginFlowJudges(pkg: PluginPackage): import("./flow-judge.js").
 export function pluginDeviceEnvResolvers(pkg: PluginPackage): import("./device-env.js").DeviceEnvResolverSpec[] {
   return (pkg.manifest.deviceEnvResolvers ?? []).map((spec) => ({
     name: spec.name,
+    entry: spec.entry ? resolve(pkg.dir, spec.entry) : pluginEntry(pkg),
+  }));
+}
+
+/** Code navigator specs contributed by a plugin package — the navigator
+ * module is imported only when a navigation is actually requested. */
+export function pluginCodeNavigators(pkg: PluginPackage): import("./code-navigator.js").CodeNavigatorSpec[] {
+  return (pkg.manifest.codeNavigators ?? []).map((spec) => ({
+    name: spec.name,
+    extensions: (spec.extensions ?? []).map((e) => e.toLowerCase()),
     entry: spec.entry ? resolve(pkg.dir, spec.entry) : pluginEntry(pkg),
   }));
 }

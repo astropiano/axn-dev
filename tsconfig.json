@@ -10,6 +10,7 @@
     { "path": "packages/cmd-dotenv" },
     { "path": "packages/cmd-overview" },
     { "path": "packages/cmd-c4model" },
-    { "path": "packages/adapter-keycloak" }
+    { "path": "packages/adapter-keycloak" },
+    { "path": "packages/know-nav-ripwire" }
   ]
 }

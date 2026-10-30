@@ -152,6 +152,12 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/know-nav-ripwire:
+    devDependencies:
+      '@axn-dev/core':
+        specifier: workspace:*
+        version: link:../core
+
 packages:
 
   '@babel/helper-string-parser@7.29.7':
