@@ -32,6 +32,8 @@ export interface CodeLocation {
   typeName: string;
   /** The member name when the symbol is a method or constructor (e.g. `applyDeltas`); absent for a type. */
   memberName?: string;
+  /** The type's fully qualified name (e.g. `info.magnolia.module.ModuleManagerImpl`), when known. */
+  qualifiedName?: string;
 }
 
 export interface NavigationHit {

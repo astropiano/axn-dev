@@ -8,7 +8,7 @@ const hit = (path: string, titlePath?: string, startLine?: number): SearchResult
 describe("codeLocationOf", () => {
   it("reads a Java method's type and member, dropping the parameter list", () => {
     expect(codeLocationOf(hit("/r/ModuleManagerImpl.java", "info.magnolia.module.ModuleManagerImpl.applyDeltas(ModuleDefinition, List<Delta>, InstallContextImpl)", 516)))
-      .toEqual({ path: "/r/ModuleManagerImpl.java", line: 516, typeName: "ModuleManagerImpl", memberName: "applyDeltas" });
+      .toEqual({ path: "/r/ModuleManagerImpl.java", line: 516, typeName: "ModuleManagerImpl", memberName: "applyDeltas", qualifiedName: "info.magnolia.module.ModuleManagerImpl" });
   });
 
   it("reads a Java constructor as a member named like its type", () => {
@@ -18,8 +18,8 @@ describe("codeLocationOf", () => {
 
   it("reads a qualified Java type, nested or not, as a type", () => {
     expect(codeLocationOf(hit("/r/AbstractRepositoryTask.java", "info.magnolia.module.delta.AbstractRepositoryTask", 48)))
-      .toEqual({ path: "/r/AbstractRepositoryTask.java", line: 48, typeName: "AbstractRepositoryTask" });
-    expect(codeLocationOf(hit("/r/Outer.java", "a.Outer.Inner", 9))).toMatchObject({ typeName: "Inner" });
+      .toEqual({ path: "/r/AbstractRepositoryTask.java", line: 48, typeName: "AbstractRepositoryTask", qualifiedName: "info.magnolia.module.delta.AbstractRepositoryTask" });
+    expect(codeLocationOf(hit("/r/Outer.java", "a.Outer.Inner", 9))).toMatchObject({ typeName: "Inner", qualifiedName: "a.Outer.Inner" });
     expect(codeLocationOf(hit("/r/Outer.java", "a.Outer.Inner.run()", 10))).toMatchObject({ typeName: "Inner", memberName: "run" });
   });
 

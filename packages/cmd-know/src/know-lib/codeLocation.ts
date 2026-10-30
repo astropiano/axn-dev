@@ -23,13 +23,17 @@ export function codeLocationOf(result: SearchResult): CodeLocation | null {
   if (paren >= 0) {
     const segments = titlePath.slice(0, paren).split(".");
     const memberName = segments.pop()!;
-    return { ...base, typeName: segments.pop() ?? memberName, memberName };
+    const qualified = /\.java$/i.test(result.path) && segments.length > 0 ? { qualifiedName: segments.join(".") } : {};
+    return { ...base, typeName: segments.pop() ?? memberName, memberName, ...qualified };
   }
 
   const segments = titlePath.split(".");
   // Parsed Java names every type by its qualified name; only a member carries parentheses.
-  if (/\.java$/i.test(result.path) || segments.length === 1) {
-    return { ...base, typeName: segments[segments.length - 1] };
+  if (/\.java$/i.test(result.path)) {
+    return { ...base, typeName: segments[segments.length - 1], qualifiedName: titlePath };
+  }
+  if (segments.length === 1) {
+    return { ...base, typeName: segments[0] };
   }
   return { ...base, typeName: segments[segments.length - 2], memberName: segments[segments.length - 1] };
 }

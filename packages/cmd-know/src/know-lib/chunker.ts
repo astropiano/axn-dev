@@ -1,8 +1,9 @@
-import type { Chunk } from "./types.js";
+import type { Chunk, CodeFacts } from "./types.js";
 import {
   AsciidocExtractor,
   CSharpExtractor,
   JavaExtractor,
+  extractJavaFacts,
   PlainTextExtractor,
   TypeScriptExtractor,
   type Extractor,
@@ -37,6 +38,19 @@ function extractorFor(filePath: string): Extractor {
 export async function extractChunks(filePath: string, text: string): Promise<Chunk[]> {
   const raw = await extractorFor(filePath).extract(text);
   return raw.map((c, i) => ({ ...c, offset: i } as Chunk));
+}
+
+/**
+ * The declarations and uses a parsed source file records, or undefined for a
+ * language that records none.
+ */
+export async function extractCodeFacts(filePath: string, text: string): Promise<CodeFacts | undefined> {
+  return hasCodeFacts(filePath) ? extractJavaFacts(text) : undefined;
+}
+
+/** Will `extractCodeFacts` record anything for this file? */
+export function hasCodeFacts(filePath: string): boolean {
+  return filePath.toLowerCase().endsWith(".java");
 }
 
 /**

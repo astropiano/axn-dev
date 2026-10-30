@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import type { Language, Node, Parser } from "web-tree-sitter";
-import type { Chunk } from "../types.js";
+import type { Chunk, CodeFacts } from "../types.js";
 import type { Extractor } from "./types.js";
 
 const TYPE_DECLARATIONS = new Set([
@@ -55,6 +55,41 @@ export class JavaExtractor implements Extractor {
       // Trees live in wasm memory, outside the JS garbage collector.
       tree.delete();
     }
+  }
+}
+
+/**
+ * The package, imports and type uses of a Java file. A use is recorded once
+ * per name and line, as written: a qualified use (`Outer.Inner`, `a.b.Foo`)
+ * as one name, not as its parts.
+ */
+export async function extractJavaFacts(text: string): Promise<CodeFacts> {
+  const parser = await javaParser();
+  const tree = parser.parse(text);
+  const facts: CodeFacts = { imports: [], types: {} };
+  if (!tree) return facts;
+  try {
+    for (const child of tree.rootNode.namedChildren) {
+      if (child?.type === "package_declaration") {
+        facts.package = child.namedChildren[0]?.text;
+      } else if (child?.type === "import_declaration" && !child.children.some((c) => c?.type === "static")) {
+        const name = child.namedChildren.find((c) => c?.type === "scoped_identifier" || c?.type === "identifier")?.text;
+        if (name) facts.imports.push(child.children.some((c) => c?.type === "asterisk") ? `${name}.*` : name);
+      }
+    }
+    const visit = (node: Node): void => {
+      if (node.type === "type_identifier" || node.type === "scoped_type_identifier") {
+        const lines = (facts.types[node.text] ??= []);
+        const line = node.startPosition.row + 1;
+        if (lines[lines.length - 1] !== line) lines.push(line);
+        return;
+      }
+      for (const child of node.namedChildren) if (child) visit(child);
+    };
+    visit(tree.rootNode);
+    return facts;
+  } finally {
+    tree.delete();
   }
 }
 

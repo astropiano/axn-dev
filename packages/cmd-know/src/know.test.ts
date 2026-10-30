@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerCodeNavigator } from "@axn-dev/core";
 import { KnowCommand } from "./know.js";
+import { loadAllItems, saveItem } from "./know-lib/storage.js";
 
 /**
  * We override resolveAxnDevRoot so the command writes into our tmp dir
@@ -218,6 +219,10 @@ describe("know find --then", () => {
       "package zoo;\n\npublic class Pouch {\n    void carry(String joey) {\n        kangaroo(joey);\n    }\n}\n",
     );
     writeFileSync(join(PROJ, "src", "notes.md"), "# Notes\n\nplatypus facts");
+    // Uses Pouch in a field type — a use only the indexed type uses can report.
+    writeFileSync(join(PROJ, "src", "Keeper.java"), "package zoo;\n\nclass Keeper {\n    private Pouch pouch;\n}\n");
+    // A same-named type in another package: not a use of zoo.Pouch.
+    writeFileSync(join(PROJ, "src", "Stranger.java"), "package elsewhere;\n\nclass Stranger {\n    Pouch pouch;\n}\n");
     writeFileSync(join(PROJ, "src", "util.ts"), "export class Wallaby {\n  hop() { return 'numbat'; }\n}\n");
     // Echoes what it was asked, plus one hit in a test source.
     writeFileSync(
@@ -260,6 +265,27 @@ describe("know find --then", () => {
 
   it("says so when no navigator serves the file", async () => {
     expect(await output("find", "numbat", "-c", "nav", "--then", "callers")).toContain("no code navigator serves");
+  });
+
+  it("adds know's own uses of a Java type to the navigator's references, resolved by package", async () => {
+    const out = await output("find", "Pouch", "-c", "nav", "--then", "references");
+
+    const references = out.slice(out.indexOf("References of"));
+    expect(references).toMatch(/^References of Pouch\S* \(fake \+ know/);
+    expect(references).toMatch(/Keeper\.java:4 — Keeper.*\(type\)/);
+    // Stranger uses its own package's Pouch; it may match the search, but it is no reference.
+    expect(references).not.toContain("Stranger.java");
+  });
+
+  it("re-reads a Java file indexed before code facts were recorded", async () => {
+    const [keeper] = loadAllItems(AXN_ROOT, "nav").filter((i) => i.path.endsWith("Keeper.java"));
+    delete keeper.code;
+    saveItem(AXN_ROOT, "nav", keeper);
+
+    await run("index", "-c", "nav");
+
+    const [again] = loadAllItems(AXN_ROOT, "nav").filter((i) => i.path.endsWith("Keeper.java"));
+    expect(again.code?.types.Pouch).toEqual([4]);
   });
 
   it("rejects an unknown navigation", async () => {

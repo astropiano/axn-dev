@@ -14,10 +14,11 @@ import {
   type Scope,
 } from "./know-lib/storage.js";
 import { hashFile, gitInfo } from "./know-lib/hash.js";
-import { extractChunks } from "./know-lib/chunker.js";
+import { extractChunks, extractCodeFacts, hasCodeFacts } from "./know-lib/chunker.js";
 import { buildBM25Index, isCurrentBM25Index, searchLists } from "./know-lib/bm25.js";
 import { fuseFiles, isTestPath } from "./know-lib/results.js";
 import { codeLocationOf } from "./know-lib/codeLocation.js";
+import { typeReferences } from "./know-lib/typeRefs.js";
 import { syncVectors } from "./know-lib/vectorIndex.js";
 import { VectorStore } from "./know-lib/vectorStore.js";
 import type { IndexingTechnique, VectorConfig, SearchResult } from "./know-lib/types.js";
@@ -217,7 +218,8 @@ Examples:
       // Content decides, not the last commit: an uncommitted edit must be re-indexed,
       // and an unchanged file must cost no git process.
       const currentHash = hashFile(item.path);
-      if (item.chunks.length > 0 && item.hash === currentHash) {
+      // A file indexed before its language recorded code facts is re-read once to add them.
+      if (item.chunks.length > 0 && item.hash === currentHash && (item.code || !hasCodeFacts(item.path))) {
         skipped++;
         updatedItems.push(item);
         continue;
@@ -226,6 +228,7 @@ Examples:
       const text = readFileSync(item.path, "utf-8");
       const hadChunks = item.chunks.length > 0;
       item.chunks = await extractChunks(item.path, text);
+      item.code = await extractCodeFacts(item.path, text);
       item.hash = currentHash;
       const git = gitInfo(item.path);
       if (git) {
@@ -322,6 +325,7 @@ Examples:
     // hiding tests still leave topN files.
     const fetchN = Math.max(topN * 20, 100);
     const lists: SearchResult[][] = [];
+    const itemsByCorpus = new Map<string, KnowItem[]>();
     let searched = 0;
     let skipped = 0;
 
@@ -347,6 +351,7 @@ Examples:
       }
 
       const items = loadAllItems(axnRoot, corpus);
+      itemsByCorpus.set(corpus, items);
       for (const list of await searchLists(idxPath, items, store, config, query, fetchN)) {
         for (const r of list) r.corpus = corpus;
         lists.push(list);
@@ -394,36 +399,55 @@ Examples:
       console.log("");
     }
     if (testHint) console.log(`\x1b[2m${testHint}\x1b[0m`);
-    if (then) await this.followTopHit(then, top.map((t) => t.result), includeTests);
+    if (then) await this.followTopHit(then, top.map((t) => t.result), includeTests, itemsByCorpus);
   }
 
   /**
    * Hand the first code symbol among the hits to a code navigator and print
    * what it finds — the step from "where is it" to "what touches it".
    */
-  private async followTopHit(query: NavigationQuery, results: SearchResult[], includeTests: boolean): Promise<void> {
-    const location = results.map(codeLocationOf).find((l) => l !== null);
-    if (!location) {
+  private async followTopHit(
+    query: NavigationQuery,
+    results: SearchResult[],
+    includeTests: boolean,
+    itemsByCorpus: Map<string, KnowItem[]>,
+  ): Promise<void> {
+    const hit = results.find((r) => codeLocationOf(r) !== null);
+    const location = hit && codeLocationOf(hit);
+    if (!hit || !location) {
       console.log(`\n--then ${query}: none of the results is a code symbol.`);
       return;
     }
     // Implementations belong to the type, even when the hit was one of its members.
     const symbol = location.memberName && query !== "implementations" ? `${location.typeName}.${location.memberName}` : location.typeName;
-    const result = await navigateCode(query, location);
-    if (!result) {
+    const navigated = await navigateCode(query, location);
+    // For a type, know answers references itself from the uses it recorded at
+    // index time — signatures and fields included, which a navigator may miss.
+    const own = query === "references" && !location.memberName && location.qualifiedName
+      ? typeReferences(itemsByCorpus.get(hit.corpus ?? "") ?? [], location.qualifiedName, location.path)
+      : [];
+    if (!navigated && own.length === 0) {
       console.log(`\n--then ${query}: no code navigator serves ${location.path}. Install one, e.g. 'axn-dev install --plugin @axn-dev/know-nav-ripwire'.`);
       return;
     }
 
-    const hits = includeTests ? result.hits : result.hits.filter((h) => !isTestPath(h.path));
-    console.log(`\n\x1b[32m${query[0].toUpperCase()}${query.slice(1)} of ${symbol}\x1b[0m\x1b[2m (${result.navigator}, ${hits.length} hit(s))\x1b[0m`);
+    const seen = new Set<string>();
+    const all = [...(navigated?.hits ?? []), ...own].filter((h) => {
+      const key = `${h.path}:${h.line ?? ""}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    const hits = includeTests ? all : all.filter((h) => !isTestPath(h.path));
+    const sources = [navigated?.navigator, own.length > 0 ? "know" : null].filter(Boolean).join(" + ");
+    console.log(`\n\x1b[32m${query[0].toUpperCase()}${query.slice(1)} of ${symbol}\x1b[0m\x1b[2m (${sources}, ${hits.length} hit(s))\x1b[0m`);
     for (const h of hits) {
       const where = h.line ? `${h.path}:${h.line}` : h.path;
       console.log(`  ${where}${h.symbol ? ` — ${h.symbol}` : ""}${h.kind ? `\x1b[2m (${h.kind})\x1b[0m` : ""}`);
     }
-    const hidden = result.hits.length - hits.length;
+    const hidden = all.length - hits.length;
     if (hidden > 0) console.log(`\x1b[2m  ${hidden} hit(s) in test sources hidden; --include-tests shows them.\x1b[0m`);
-    for (const c of result.caveats) console.log(`\x1b[33m  ⚠ ${c}\x1b[0m`);
+    for (const c of navigated?.caveats ?? []) console.log(`\x1b[33m  ⚠ ${c}\x1b[0m`);
   }
 
   // ---------------------------------------------------------------------------

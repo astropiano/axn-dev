@@ -23,6 +23,16 @@ export interface Chunk {
   embedding?: number[];
 }
 
+/** What a parsed source file declares and uses, for answering references without another tool. */
+export interface CodeFacts {
+  /** The file's package, when the language has one. */
+  package?: string;
+  /** Imported names, wildcards as `pkg.*`. Static imports are left out: they import members, not types. */
+  imports: string[];
+  /** Each type name the file uses, as written (`Foo`, `Outer.Inner`, `a.b.Foo`), with the lines it is used on. */
+  types: Record<string, number[]>;
+}
+
 export interface KnowItem {
   path: string;
   added: string;
@@ -30,6 +40,8 @@ export interface KnowItem {
   git_repo?: string;
   git_commit?: string;
   chunks: Chunk[];
+  /** Set for languages whose extractor records them (Java). */
+  code?: CodeFacts;
 }
 
 export interface BM25SearchResult {
