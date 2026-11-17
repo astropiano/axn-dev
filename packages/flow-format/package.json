@@ -22,7 +22,8 @@
     "prepublishOnly": "pnpm build"
   },
   "dependencies": {
-    "fast-xml-parser": "^5.11.0"
+    "fast-xml-parser": "^5.11.0",
+    "js-yaml": "^4.1.0"
   },
   "peerDependencies": {
     "@axn-dev/core": "*"

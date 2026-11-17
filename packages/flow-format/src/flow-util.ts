@@ -1,9 +1,11 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { XMLParser } from "fast-xml-parser";
 import { getWorktreeInfo, getWorktreeInfoAsync, flowDirNames, FLOW_RESERVED_STEP_NAMES } from "@axn-dev/core";
 import type { AxnDevConfig } from "@axn-dev/core";
 import { validateFlow } from "./flow-validation.js";
+import { loadFlowsFromFeatureFile } from "./flow-gherkin.js";
 
 export interface ParsedModel {
   provider: string;
@@ -46,7 +48,7 @@ export interface ParsedAssertion {
   max?: number;
 }
 
-function parseAssertAttrs(attrs: Record<string, any>, text?: string): ParsedAssertion {
+export function parseAssertAttrs(attrs: Record<string, any>, text?: string): ParsedAssertion {
   const num = (v: any): number | undefined => (v === undefined ? undefined : Number(v));
   return {
     that: String(attrs.that ?? ""),
@@ -113,7 +115,8 @@ export interface ParsedStep {
    *  <assert>/<assertions> children that evaluate this step's own output
    *  (the step is the explicit subject under test) */
   assertions?: ParsedAssertion[];
-  /** picture/video: artifact name (required for evidence steps) */
+  /** picture/video: artifact name (required for evidence steps);
+   *  metric/stopwatch: the measurement id */
   name?: string;
   /** picture: CSS selector — clip the screenshot to this element */
   selector?: string;
@@ -131,6 +134,9 @@ export interface ParsedStep {
   /** extract: page URL for standalone (no-orchestrator) reads; ${VAR} allowed,
    *  defaults to BASE_URL */
   url?: string;
+  /** metric: metric names to collect over the children (from collect="a,b").
+   *  Defaults to ["duration"]; <stopwatch> is sugar for collect="duration". */
+  collect?: string[];
 }
 
 export interface ParsedFlow {
@@ -188,6 +194,19 @@ export interface ManualStepResult {
   notes?: string;
 }
 
+/** A named measurement recorded by a <metric>/<stopwatch> block — one
+ * entry per collected metric per block execution (a block inside <repeat>
+ * yields entries per iteration). */
+export interface MetricRecord {
+  /** <metric id="..."> / <stopwatch id="..."> */
+  id: string;
+  /** Metric name: "duration" (built-in) or a plugin collector name */
+  name: string;
+  value: number;
+  /** Unit label ("ms", "s", "mb", …) as declared by the collector */
+  unit?: string;
+}
+
 /** A captured evidence artifact (screenshot or video segment). */
 export interface EvidenceArtifact {
   kind: "picture" | "video";
@@ -211,13 +230,49 @@ export interface FlowResult {
   durationMs?: number;
   /** Step-level results for manual flow executions */
   manualSteps?: ManualStepResult[];
+  /** <metric>/<stopwatch> measurements, in completion order */
+  metrics?: MetricRecord[];
   /** Evidence captured during the run (screenshots, video segments) */
   evidence?: EvidenceArtifact[];
 }
 
+export interface GitInfo {
+  /** Current branch, or null on detached HEAD */
+  branch: string | null;
+  /** HEAD commit hash at report time */
+  commit: string;
+  /** True when `git status --porcelain` is empty (no tracked or untracked changes) */
+  clean: boolean;
+}
+
 export interface FlowReport {
   timestamp: string;
+  /** Wall-clock duration of the whole run (incl. scenario startup). */
+  durationMs?: number;
+  /** Git context of the repo the flows live in — omitted outside a work tree. */
+  git?: GitInfo;
   flows: FlowResult[];
+}
+
+/** Git context for reports — null when `dir` is not inside a git work tree
+ * (or git is unavailable), so callers can simply omit the field. */
+export function gitInfoFor(dir: string): GitInfo | null {
+  const run = (args: string[]): string | null => {
+    try {
+      return execFileSync("git", ["-C", dir, ...args], {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+    } catch {
+      return null;
+    }
+  };
+  const inside = run(["rev-parse", "--is-inside-work-tree"]);
+  const commit = run(["rev-parse", "HEAD"]);
+  if (inside !== "true" || !commit) return null;
+  const branch = run(["symbolic-ref", "--short", "-q", "HEAD"]);
+  const status = run(["status", "--porcelain"]);
+  return { branch: branch || null, commit, clean: status === "" };
 }
 
 /** Normalize a runner name ('legacy' → 'axn'). Throws on unknown values. */
@@ -232,7 +287,7 @@ export function normalizeRunnerName(value?: string | null): string | undefined {
 
 const flowXmlArrays = new Set([
   "flow", "scenario", "model", "assert", "step", "script",
-  "var", "readiness", "tag", "picture", "video", "repeat", "extract",
+  "var", "readiness", "tag", "picture", "video", "repeat", "extract", "stopwatch", "metric",
 ]);
 
 const xmlParser = new XMLParser({
@@ -408,6 +463,26 @@ function stepNodeToParsedStep(child: OrderedNode): ParsedStep | null {
     };
   }
 
+  // <metric> measures the wrapped steps via named collectors;
+  // <stopwatch> is sugar for <metric collect="duration">.
+  if (child.metric !== undefined || child.stopwatch !== undefined) {
+    const tag = child.metric !== undefined ? "metric" : "stopwatch";
+    const inner = (child[tag] as OrderedNode[])
+      .map(stepNodeToParsedStep)
+      .filter((s): s is ParsedStep => s !== null);
+    const collect = (attrs.collect ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return {
+      type: "metric",
+      name: attrs.id ?? attrs.name,
+      collect: collect.length > 0 ? collect : ["duration"],
+      children: inner,
+      description: desc || undefined,
+    };
+  }
+
   if (child.assertions !== undefined) {
     const blockFresh = attrs.fresh === "true" || attrs.fresh === "";
     const blockDesc = desc || nodeText(child, "assertions") || undefined;
@@ -565,11 +640,11 @@ function stepSearchDirs(flowDir: string, includeSpecs: string[]): string[] {
   return [...new Set(dirs)];
 }
 
-type StepRef = { kind: "name"; value: string } | { kind: "file"; value: string };
+export type StepRef = { kind: "name"; value: string } | { kind: "file"; value: string };
 
 /** A <step> is a step-file reference when it carries file= (always) or
  * action= without adapter/src — action= is an adapter arg otherwise. */
-function stepRefOf(step: ParsedStep): StepRef | null {
+export function stepRefOf(step: ParsedStep): StepRef | null {
   if (step.type !== "script") return null;
   const file = step.args?.file;
   const action = step.args?.action;
@@ -720,13 +795,22 @@ export function expandStepRefs(
   return steps.map((s) => expand(s, []));
 }
 
+/** Flow file extensions accepted by discovery and file guards. */
+export function isFlowFileName(name: string): boolean {
+  return name.endsWith(".xml") || name.endsWith(".feature");
+}
+
 /**
- * Parse an XML flow file into ParsedFlow[]. Throws on missing file,
- * non-XML paths, and files with no <flow> elements.
+ * Parse a flow file (.xml or .feature) into ParsedFlow[]. Throws on missing
+ * file, directories, and files with no flow definitions.
  */
 export function loadFlowsFromFile(filePath: string): ParsedFlow[] {
   if (!existsSync(filePath) || lstatSync(filePath).isDirectory()) {
-    throw new Error(`The --file path must point to an XML file, not a directory: ${filePath}`);
+    throw new Error(`The --file path must point to a flow file (.xml or .feature), not a directory: ${filePath}`);
+  }
+
+  if (filePath.endsWith(".feature")) {
+    return loadFlowsFromFeatureFile(filePath);
   }
 
   const xml = readFileSync(filePath, "utf-8");
@@ -940,12 +1024,9 @@ export function parseFlow(raw: any): ParsedFlow {
     });
   }
 
-  // <repeat> blocks — flat fallback; child order within a repeat is
-  // best-effort (the ordered parse is authoritative).
-  const rawRepeats = rawSteps?.repeat
-    ? (Array.isArray(rawSteps.repeat) ? rawSteps.repeat : [rawSteps.repeat])
-    : [];
-  for (const r of rawRepeats) {
+  // Wrapper blocks (<repeat>, <stopwatch>) — flat fallback; child order
+  // within a wrapper is best-effort (the ordered parse is authoritative).
+  const flatWrapperChildren = (r: any): ParsedStep[] => {
     const children: ParsedStep[] = [];
     const toArr = (v: any) => (v ? (Array.isArray(v) ? v : [v]) : []);
     const innerScripts = r?.step ?? r?.script;
@@ -976,12 +1057,37 @@ export function parseFlow(raw: any): ParsedFlow {
         ),
       });
     }
+    return children;
+  };
+
+  const rawRepeats = rawSteps?.repeat
+    ? (Array.isArray(rawSteps.repeat) ? rawSteps.repeat : [rawSteps.repeat])
+    : [];
+  for (const r of rawRepeats) {
     steps.push({
       type: "repeat",
       num: parseRepeatNum(r?.num !== undefined ? String(r.num) : undefined),
       success: parseRepeatSuccess(r?.success !== undefined ? String(r.success) : undefined),
-      children,
+      children: flatWrapperChildren(r),
       description: r?.description ?? r?.desc,
+    });
+  }
+
+  const rawMetrics = [
+    ...(rawSteps?.metric ? (Array.isArray(rawSteps.metric) ? rawSteps.metric : [rawSteps.metric]) : []),
+    ...(rawSteps?.stopwatch ? (Array.isArray(rawSteps.stopwatch) ? rawSteps.stopwatch : [rawSteps.stopwatch]) : []),
+  ];
+  for (const sw of rawMetrics) {
+    const collect = String(sw?.collect ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    steps.push({
+      type: "metric",
+      name: sw?.id ?? sw?.name,
+      collect: collect.length > 0 ? collect : ["duration"],
+      children: flatWrapperChildren(sw),
+      description: sw?.description ?? sw?.desc,
     });
   }
 
@@ -1084,7 +1190,7 @@ function scanFlowsDir(
     const effRoot = isAbsolute(name) ? dirname(resolve(flowsDir)) : root;
 
     for (const entry of readdirSync(flowsDir, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(".xml")) continue;
+      if (!entry.isFile() || !isFlowFileName(entry.name)) continue;
       const file = join(flowsDir, entry.name);
       if (seenFiles.has(resolve(file))) continue;
       seenFiles.add(resolve(file));
@@ -1333,22 +1439,28 @@ export function isUnderEvidenceDir(file: string): boolean {
   return resolved.includes(marker);
 }
 
-/** Guard: flow file paths must be an .xml inside a configured flows dir of a known root. */
+/** Guard: flow file paths must be an .xml or .feature inside a configured flows dir of a known root. */
 export function isFlowFileAllowed(file: string, roots: string[], dirNames?: string[]): boolean {
-  if (!file.endsWith(".xml")) return false;
+  if (!isFlowFileName(file)) return false;
   const dir = resolve(dirname(file));
   return allowedFlowDirs(roots, dirNames ?? flowDirNames()).includes(dir);
 }
 
 /** Write a FlowReport to the .reports directory next to the flow file (flows/.reports). */
-export function writeFlowReport(filePath: string, results: FlowResult[]): string {
+export function writeFlowReport(filePath: string, results: FlowResult[], opts?: { durationMs?: number }): string {
   const reportsDir = join(dirname(filePath), ".reports");
   if (!existsSync(reportsDir)) {
     mkdirSync(reportsDir, { recursive: true });
     writeFileSync(join(reportsDir, ".gitignore"), "*\n");
   }
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const report: FlowReport = { timestamp, flows: results };
+  const git = gitInfoFor(dirname(filePath));
+  const report: FlowReport = {
+    timestamp,
+    ...(opts?.durationMs !== undefined ? { durationMs: opts.durationMs } : {}),
+    ...(git ? { git } : {}),
+    flows: results,
+  };
   const fileName = `flow-report-${timestamp}.json`;
   const reportPath = join(reportsDir, fileName);
   writeFileSync(reportPath, JSON.stringify(report, null, 2));

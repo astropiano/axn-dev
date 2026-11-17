@@ -76,6 +76,8 @@ export interface AxnDevManifest {
   flowAdapters?: PluginFlowAdapterSpec[];
   /** LLM judges (`that="llm"` evaluators) contributed by this package. */
   judges?: PluginJudgeSpec[];
+  /** Flow metric collectors (`<metric collect="...">`) contributed by this package. */
+  flowMetrics?: PluginMetricSpec[];
   /** Device-env resolvers contributed by this package. */
   deviceEnvResolvers?: PluginDeviceEnvSpec[];
 }
@@ -84,6 +86,15 @@ export interface AxnDevManifest {
  * `entry`, default: the plugin entry) exports `judge` or a default
  * `FlowJudge` function. Selected via `judge="name"` or `judge="name/<arg>"`. */
 export interface PluginJudgeSpec {
+  name: string;
+  entry?: string;
+}
+
+/** A flow metric collector contributed by a plugin package. The metric
+ * module (see `entry`, default: the plugin entry) exports `metrics`, a
+ * single `metric`, or a default `FlowMetricCollector`. Selected via
+ * `collect="name"` on a <metric> block. */
+export interface PluginMetricSpec {
   name: string;
   entry?: string;
 }
@@ -338,6 +349,27 @@ export function pluginFlowJudges(pkg: PluginPackage): import("./flow-judge.js").
         );
       }
       return judge as import("./flow-judge.js").FlowJudge;
+    },
+  }));
+}
+
+/** Flow-metric specs contributed by a plugin package — names are known
+ * statically; the collector module is imported only when collect="name"
+ * is used. */
+export function pluginFlowMetrics(pkg: PluginPackage): import("./flow-metric.js").FlowMetricSpec[] {
+  return (pkg.manifest.flowMetrics ?? []).map((spec) => ({
+    name: spec.name,
+    load: async () => {
+      const entry = spec.entry ? resolve(pkg.dir, spec.entry) : pluginEntry(pkg);
+      const mod = await import(pathToFileURL(entry).href);
+      const collector =
+        mod.metrics?.[spec.name] ?? mod.metric ?? mod.default;
+      if (!collector || typeof collector.collect !== "function") {
+        throw new Error(
+          `Plugin '${pkg.name}' does not export a FlowMetricCollector for '${spec.name}'`,
+        );
+      }
+      return { name: spec.name, ...collector } as import("./flow-metric.js").FlowMetricCollector;
     },
   }));
 }

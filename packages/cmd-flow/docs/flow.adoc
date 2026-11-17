@@ -1,6 +1,6 @@
 == Flow Testing
 
-Run XML-defined agentic flow tests against Docker Compose scenarios.
+Run agentic flow tests — defined in XML or Gherkin (`.feature`) — against Docker Compose scenarios.
 
 [source,bash]
 ----
@@ -14,6 +14,89 @@ axn-dev flow -f flows/example.xml --clean-start --yes   # wipe data and run with
 The `--clean-start` flag stops the scenario(s), removes their named Docker volumes, and starts them fresh before the flow runs. It does not rebuild images. It is not compatible with `--infra`.
 
 A flow file describes one or more `<flow>` elements with scenarios, models, a user message, and assertions. The built-in `tsAdapter` runs TypeScript/Playwright scripts; all other adapters come from plugin packages — `http` (generic, bundled with `cmd-flow`), `keycloak` (`@axn-dev/adapter-keycloak`), or any adapter an installed plugin declares — or from script files resolved per step. Assertions: `num_responses`, `contains`, `exitCode`, `duration`, `script`, `screenshot` and `llm`. Reports are written to `flows/.reports/` next to the flow file.
+
+=== Gherkin flow files (`.feature`)
+
+As an alternative to XML, a flow file can be a Gherkin document with a YAML
+frontmatter block: the frontmatter carries the file-level config (scenarios,
+env, models, orchestrator, runner, adapter, `base-url`, tags, step `include`
+dirs), and each `Scenario` becomes a flow. Semantics are custom —
+deterministic step patterns, no step-definition matching — but the file
+stays parseable as ordinary Gherkin, so `.feature` tooling (highlighting,
+folding) works.
+
+[source,gherkin]
+----
+---
+scenarios:
+  - name: app-dev
+    service: app-server
+    adapter: http
+env:
+  MY_VAR: value
+models:
+  - { provider: ollama, name: llama3.1:latest }
+---
+
+Feature: example - how late is it
+
+  Background:                          # steps prepended to every scenario
+    Given step "db-cleanup"
+
+  @smoke
+  Scenario: asking about the time
+    Given step "keycloak-create-user"  # step-file ref, like <step action=>
+      | username  | mom              | # data tables merge into step args
+    When step "um-login" TEST_USER="${USER}"
+    And script "steps/invite.ts"       # like <step src=>
+    When the user says "What time is it?"
+    Then the output contains "time"
+    And there is 1 response
+    And an llm judges "states a time" using "ollama/llama3.1"
+----
+
+Producing-step patterns (after `Given`/`When`/`*`): `step "name"` / `step
+file "path.xml"` (step-file refs — step files stay `.xml`), `script "x.ts"`,
+`the user says "…"` (or a `"""` docstring for multi-line payloads), `picture
+"name" [of "sel"] [fullpage]`, `extract "sel" [as "name"]`, and any other
+leading identifier — dispatched as a custom adapter tag (`Given
+keycloak-login user=mom`). Trailing `key=value` tokens become step args;
+`adapter=`, `lang=`, `runner=`, `desc=` map to step fields.
+
+Assertion patterns (after `Then`; `And`/`But` continue the family): `the
+output contains "x"`, `the new output contains "x"` (`fresh`), `there is|are
+N responses`, `the exit code is N`, `it took less than|between … ms`
+(duration), `the page matches "ref.png"` / `"sel" matches "ref.png"`
+(screenshot), `an llm judges "rubric" [using "judge"]`, `script "x.ts"
+passes`, and the generic escape hatch `assert <that> [value] [k=v …]
+[flag …]` covering every attribute (e.g. `assert screenshot refs/a.png
+fullPage maxDiff=0.02`). A data table under a `Then` line merges `k=v` rows
+into that assert.
+
+Nesting (the part Gherkin lacks) uses indented block headers — valid
+Gherkin when `*`-prefixed:
+
+[source,gherkin]
+----
+* video "booking":                  # records the children as .webm
+    When script "steps/open-booking.ts"
+    And script "steps/confirm.ts"
+* repeat 10 times at 80%:           # <repeat num=10 success=0.8>
+    When the user says "time?"
+    Then the output contains ":"
+* stopwatch "cold-start":           # timing-only wrapper
+    When script "steps/first.ts"
+----
+
+Two more attachments: a `Then` line indented deeper than the preceding
+producing step binds to that step alone (like a nested `<assert>` in XML),
+and `Scenario Outline` + `Examples:` expand one scenario into a flow per
+row — `<col>` placeholders substitute in steps and the row merges into the
+flow's env.
+
+Frontmatter is *file-level* by design: unlike XML, where each `<flow>`
+carries its own `<scenarios>`/`<env>`, all `Scenario`s in a `.feature`
+share it — flows needing different config go in separate files.
 
 === Assertion scoping
 
@@ -125,6 +208,43 @@ For flaky-but-generally-good behavior — the typical LLM-evaluation case — wr
 ----
 
 `success` accepts a count, fraction (`"0.8"`), or percent (`"80%"`). The block reports `repeat: {runs, succeeded, needed, failures[]}` detail in the JSON report; each iteration's assertions see only that iteration's output.
+
+`<metric id="..." collect="duration,...">` wraps steps purely for
+measurement — it records each collected metric under `flows[].metrics[]`
+in the report (and in the serve report view) without any pass/fail
+verdict. Blocks nest, and a metric inside `<repeat>` produces one entry
+per iteration. To *bound* a single step's time, keep using
+`<assert that="duration" max="..."/>`.
+
+[source,xml]
+----
+<steps>
+  <metric id="cold-start" collect="duration,cpu_s">
+    <usermessage value="Summarize README.md"/>
+    <assertions>
+      <assert that="contains" value="summary"/>
+    </assertions>
+  </metric>
+</steps>
+----
+
+`collect` is a comma-separated list of metric names (default:
+`duration`). `duration` is built in — engine wall clock, and
+`<stopwatch id="x">` is sugar for `<metric id="x" collect="duration">`.
+Every other name resolves to a collector contributed by a plugin via its
+`axn-dev.flowMetrics` manifest entry — what's measurable (cpu, memory,
+container stats) depends on the adapter's runtime:
+
+[source,json]
+----
+{ "axn-dev": { "flowMetrics": [{ "name": "cpu_s", "entry": "dist/metrics.js" }] } }
+----
+
+A collector module exports a `FlowMetricCollector` — `begin(ctx)` runs
+before the wrapped steps, `collect(ctx, state)` after (also on failure)
+and returns a number, or `null` when the metric is unavailable. Missing
+or unavailable metrics are skipped with a warning;
+`--fail-on-unavailable-metric` turns that into an error instead.
 
 In browser flows, `<extract>` pulls a DOM element into the output stream so the judge sees exactly the rendered answer rather than raw responses:
 
@@ -418,6 +538,36 @@ directly (`service`/`port` attributes are ignored — there is no endpoint
 map); a deployment with no probes runs immediately without a default probe.
 Deployment targets work for both `tsAdapter` and `<usermessage>` plugin
 adapters — unlike `-i`, which is tsAdapter-only.
+
+=== Reports
+
+Every run writes `flows/.reports/flow-report-<timestamp>.json` next to the
+flow file. Alongside `timestamp` and the per-flow `flows[]` entries (each
+with its own `durationMs`), the report records the overall `durationMs` of
+the run and — when the flow file lives in a git repo — a `git` block:
+
+[source,json]
+----
+{
+  "timestamp": "2026-10-28T09-12-03-114Z",
+  "durationMs": 42130,
+  "git": {
+    "branch": "feature/x",
+    "commit": "8f15f9bf…",
+    "clean": false
+  },
+  "flows": [ … ]
+}
+----
+
+`git.branch` is `null` on a detached HEAD and `git.clean` is `false` when
+`git status --porcelain` reports anything (modified *or* untracked files).
+Outside a work tree the `git` block is omitted. The `--report` JSON gets
+the same fields.
+
+Each `flows[]` entry additionally carries `metrics[]` — `{id, name,
+value, unit?}` records produced by `<metric>`/`<stopwatch>` blocks —
+alongside its own `durationMs`.
 
 === CI usage
 

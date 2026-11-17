@@ -117,7 +117,7 @@ export interface FlowAdapterSpec {
  * their manifests by design. */
 export const FLOW_ENGINE_STEP_TAGS: ReadonlySet<string> = new Set([
   "usermessage", "step", "script", "assert", "assertions",
-  "picture", "video", "repeat", "extract",
+  "picture", "video", "repeat", "extract", "stopwatch", "metric",
 ]);
 
 /** Structural elements — meaningful only in their own positions

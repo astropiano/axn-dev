@@ -49,7 +49,7 @@ function describeStep(step: ParsedStep, index: number): string {
   if (step.description) return `${base} ${step.description}`;
   if (step.type === "message" && step.value) return `${base} ${step.value}`;
   if (step.type === "script" && step.src) return `${base} ${step.src}`;
-  if ((step.type === "picture" || step.type === "video") && step.name) return `${base} ${step.name}`;
+  if ((step.type === "picture" || step.type === "video" || step.type === "metric") && step.name) return `${base} ${step.name}`;
   return base;
 }
 
@@ -236,6 +236,12 @@ export class ManualFlowRunner {
     }
     if (step.type === "repeat") {
       console.log(`  Repeat ${step.num ?? "?"}× (≥${Math.round((step.success ?? 1) * 100)}% must pass) covering ${step.children?.length ?? 0} step(s):`);
+      for (const c of step.children ?? []) {
+        console.log(`    - ${c.description ?? c.src ?? c.type}`);
+      }
+    }
+    if (step.type === "metric") {
+      console.log(`  Metric block '${step.name ?? "metric"}' (collect: ${(step.collect ?? ["duration"]).join(",")}) covering ${step.children?.length ?? 0} step(s):`);
       for (const c of step.children ?? []) {
         console.log(`    - ${c.description ?? c.src ?? c.type}`);
       }

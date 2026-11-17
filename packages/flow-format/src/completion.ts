@@ -1,5 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { isFlowFileName } from "./flow-util.js";
 
 /** Complete the current word with flow XML files under flows/ or a given path. */
 export function listFlowFiles(partial: string): string[] {
@@ -15,7 +16,7 @@ export function listFlowFiles(partial: string): string[] {
       if (!existsSync(dir)) return [];
 
       return readdirSync(dir, { withFileTypes: true })
-        .filter((e) => e.isFile() && e.name.endsWith(".xml") && e.name.toLowerCase().startsWith(base))
+        .filter((e) => e.isFile() && isFlowFileName(e.name) && e.name.toLowerCase().startsWith(base))
         .map((e) => `${partial.slice(0, partial.lastIndexOf("/") + 1)}${e.name}`);
     }
 
@@ -24,7 +25,7 @@ export function listFlowFiles(partial: string): string[] {
     }
 
     return readdirSync(flowRoot, { withFileTypes: true })
-      .filter((e) => e.isFile() && e.name.endsWith(".xml"))
+      .filter((e) => e.isFile() && isFlowFileName(e.name))
       .map((e) => `${flowDir}/${e.name}`);
   } catch {
     return [];

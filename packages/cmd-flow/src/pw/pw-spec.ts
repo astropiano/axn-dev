@@ -11,11 +11,16 @@ import {
   discoverPlugins,
   pluginFlowAdapters,
   pluginFlowJudges,
+  pluginFlowMetrics,
   registerFlowAdapter,
   registerFlowJudge,
+  registerFlowMetric,
   flowAdapter,
   hasFlowAdapter,
+  flowMetric,
+  hasFlowMetric,
   type FlowAdapterContext,
+  type FlowMetricCollector,
 } from "@axn-dev/core";
 import { evaluateScreenshotAssertion } from "../screenshot.js";
 import { evaluateLlmAssertion } from "../llm-judge.js";
@@ -44,11 +49,12 @@ interface PwUnit {
   selector?: string;
   fullPage?: boolean;
   assertions?: PwAssertion[];
-  children?: PwUnit[]; // video segments / repeat children
+  children?: PwUnit[]; // video segments / repeat children / metric blocks
   num?: number;
   success?: number;
   attr?: string;
   url?: string;
+  collect?: string[]; // metric: collector names
 }
 
 interface PwPayload {
@@ -63,6 +69,7 @@ interface PwPayload {
   messageAdapter?: string;
   model?: { provider: string; name: string };
   units: PwUnit[];
+  failOnUnavailableMetric?: boolean;
 }
 
 interface StepOutcome {
@@ -84,6 +91,7 @@ const pkgDir = join(fileURLToPath(import.meta.url), "..", "..", "..");
 for (const pkg of discoverPlugins([join(pkgDir, "..")])) {
   for (const spec of pluginFlowAdapters(pkg)) registerFlowAdapter(spec);
   for (const spec of pluginFlowJudges(pkg)) registerFlowJudge(spec);
+  for (const spec of pluginFlowMetrics(pkg)) registerFlowMetric(spec);
 }
 
 const slug = (s: string) =>
@@ -100,6 +108,7 @@ test(payload.name, async ({ page }, testInfo) => {
   test.setTimeout(600_000);
   const outputs: string[] = [];
   const evidence: { kind: string; name: string; path: string; stepIndex?: number }[] = [];
+  const metrics: { id: string; name: string; value: number; unit?: string }[] = [];
   const steps: StepOutcome[] = [];
   let lastExit = 0;
   let evidenceCounter = 0;
@@ -303,6 +312,53 @@ test(payload.name, async ({ page }, testInfo) => {
           expect(passed, `repeat needed ${needed}/${num} ok, got ${ok}`).toBe(true);
           break;
         }
+        case "metric": {
+          const metricCtx = {
+            env: payload.env,
+            flowDir: payload.flowDir,
+            cwd: process.cwd(),
+            flowName: payload.name,
+            scenario: payload.scenario,
+            baseUrl: payload.baseUrl,
+          };
+          const collectors: FlowMetricCollector[] = [];
+          for (const n of u.collect ?? ["duration"]) {
+            if (!hasFlowMetric(n)) {
+              if (payload.failOnUnavailableMetric) {
+                throw new Error(
+                  `<metric id="${u.name ?? "metric"}"> requested metric '${n}' but no collector is registered — ` +
+                    `install a plugin declaring it via axn-dev.flowMetrics`
+                );
+              }
+              console.log(`    metric '${n}' unavailable — skipped`);
+              continue;
+            }
+            collectors.push(await flowMetric(n));
+          }
+          const states = await Promise.all(collectors.map((c) => c.begin?.(metricCtx)));
+          try {
+            for (const inner of u.children ?? []) {
+              await runUnit(inner, i, pg);
+            }
+          } finally {
+            for (const [j, c] of collectors.entries()) {
+              let value: number | null = null;
+              try {
+                value = await c.collect(metricCtx, states[j]);
+              } catch {
+                value = null;
+              }
+              if (value !== null) {
+                metrics.push({ id: u.name ?? "metric", name: c.name, value, unit: c.unit });
+              } else if (payload.failOnUnavailableMetric) {
+                throw new Error(`metric '${c.name}' unavailable for <metric id="${u.name ?? "metric"}">`);
+              } else {
+                console.log(`    metric '${c.name}' unavailable — skipped`);
+              }
+            }
+          }
+          break;
+        }
         case "video": {
           // Record the live page in place: no second browser context, so page state (an open
           // dialog, a logged-in session) carries into and out of the segment, and steps or
@@ -364,7 +420,7 @@ test(payload.name, async ({ page }, testInfo) => {
   } finally {
     writeFileSync(
       payload.outFile,
-      JSON.stringify({ outputs, evidence, steps, lastExit }, null, 2)
+      JSON.stringify({ outputs, evidence, metrics, steps, lastExit }, null, 2)
     );
   }
 });

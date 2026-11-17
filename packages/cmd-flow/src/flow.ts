@@ -18,10 +18,14 @@ import {
   flowAdaptersForTag,
   flowAdapterSpecs,
   hasFlowAdapter,
+  flowMetric,
+  hasFlowMetric,
   type FlowAdapterContext,
   type FlowAdapterStep,
+  type FlowMetricCollector,
+  type FlowMetricContext,
 } from "@axn-dev/core";
-import { loadFlowsFromFile, discoverAllFlows, writeFlowReport, evidenceDirFor, normalizeRunnerName, toJUnitXml, type FlowInfo } from "@axn-dev/flow-format";
+import { loadFlowsFromFile, discoverAllFlows, writeFlowReport, evidenceDirFor, normalizeRunnerName, toJUnitXml, gitInfoFor, type FlowInfo } from "@axn-dev/flow-format";
 import type {
   ParsedFlow,
   ParsedScenario,
@@ -63,7 +67,7 @@ interface ExecScope {
 const FLOW_FLAGS = [
   "--file", "-f", "--model", "-m", "--filter", "-t", "--suite",
   "--no-stop", "--no-build", "--clean-start", "--manual", "--adapter",
-  "--report", "--report-format", "--quiet", "-q",
+  "--report", "--report-format", "--quiet", "-q", "--fail-on-unavailable-metric",
   "--infra", "-i", "--base-url", "--global", "-g", "--workbase", "--auto-port",
   "--port", "--pwd", "-c", "--yes", "-y", "-B", "--runner", "--help", "-h",
 ];
@@ -90,6 +94,9 @@ export class FlowCommand implements Command {
   private quietMode = false;
   /** --report-format: 'json' or 'junit'. */
   private reportFormat = "json";
+  /** --fail-on-unavailable-metric: error instead of skipping when a
+   * <metric> collector is missing or reports null. */
+  private failOnUnavailableMetric = false;
   private reportPath: string | null = null;
 
   help(): string {
@@ -127,6 +134,11 @@ Options:
                           (the default flows/.reports/*.json is always kept)
   --report-format <fmt>   Format for --report: json (default) or junit
                           (JUnit XML for CI test reports, e.g. GitLab)
+  --fail-on-unavailable-metric
+                          Fail the flow when a <metric collect="..."> name
+                          has no registered collector, or the collector
+                          reports the metric unavailable (default: warn and
+                          skip that metric)
   --runner <axn|pw>       Execution engine override: 'axn' (default) runs steps
                           through the orchestrator/script engine; 'pw' runs the
                           flow as a Playwright spec (test.step()s, traces,
@@ -199,6 +211,14 @@ Flakiness / non-determinism:
   error; failed iterations do not stop the block. Assertions inside a repeat
   see only that iteration's output. Repeats nest; the block reports as a
   'repeat' assertion with per-run stats in the JSON report.
+  <metric id="name" collect="duration,..."> wraps steps: records named
+                          measurements of the block under flows[].metrics[]
+                          in the report — pure measurement, never a
+                          pass/fail verdict (use that="duration" to bound a
+                          single step). 'duration' is built in; other names
+                          resolve to plugin collectors (axn-dev.flowMetrics).
+                          <stopwatch id="n"> is sugar for
+                          <metric id="n" collect="duration">.
   <extract selector="..." [attr="text|value|html|<name>"]/> reads a DOM
                           element's content into the output stream — e.g. the
                           last message of an interactive HTML chat — so
@@ -228,6 +248,7 @@ Examples:
   }
 
   async execute(args: string[]): Promise<void> {
+    const runStartedAt = Date.now();
     if (args[0] === "list") {
       this.listFlows();
       return;
@@ -301,6 +322,8 @@ Examples:
         stopAfter = false;
       } else if (arg === "--quiet" || arg === "-q") {
         this.quietMode = true;
+      } else if (arg === "--fail-on-unavailable-metric") {
+        this.failOnUnavailableMetric = true;
       } else if (arg === "--report") {
         this.reportPath = args[++i];
         if (!this.reportPath) throw new Error("--report requires a path");
@@ -461,10 +484,11 @@ Examples:
       }
     }
 
+    const durationMs = Date.now() - runStartedAt;
     if (this._resolvedFilePath) {
-      writeFlowReport(this._resolvedFilePath, results);
+      writeFlowReport(this._resolvedFilePath, results, { durationMs });
     }
-    this.writeExtraReport(results);
+    this.writeExtraReport(results, durationMs);
     this.printSummary(results);
 
     if (results.some((r) => !r.passed)) {
@@ -557,8 +581,9 @@ Examples:
         s.adapter !== "tsAdapter" &&
         !this.servesMessage(s.adapter)) ||
       // custom step tags dispatch to the adapter owning the tag; <repeat>
-      // itself is a container — its children are checked individually
-      (s.type !== "script" && s.type !== "message" && s.type !== "assertions" && s.type !== "repeat" && s.type !== "extract");
+      // and <metric> are containers — their children are checked
+      // individually
+      (s.type !== "script" && s.type !== "message" && s.type !== "assertions" && s.type !== "repeat" && s.type !== "extract" && s.type !== "metric");
     const hasCustomAdapterStep = flow.steps.some(
       (s) => isCustomUnit(s) || (s.children ?? []).some(isCustomUnit)
     );
@@ -602,7 +627,8 @@ Examples:
     const hasMessageStep = flow.steps.some(
       (s) =>
         s.type === "message" ||
-        (s.type === "repeat" && (s.children ?? []).some((c) => c.type === "message"))
+        ((s.type === "repeat" || s.type === "metric") &&
+          (s.children ?? []).some((c) => c.type === "message"))
     );
     const messageStep = flow.steps.find((s) => s.type === "message");
     const message = messageStep?.value || flow.userMessage;
@@ -636,10 +662,10 @@ Examples:
           if (u.type === "extract") {
             throw new Error(`<extract> needs a browser page — use a tsAdapter flow with orchestrator= or runner="pw"`);
           }
-          if (inRepeat && u.type !== "message" && u.type !== "assertions" && u.type !== "repeat") {
+          if (inRepeat && u.type !== "message" && u.type !== "assertions" && u.type !== "repeat" && u.type !== "metric") {
             throw new Error(
               `<${u.type}> inside <repeat> is not supported in a '${activeScenario.adapter}' flow — ` +
-                `repeat children must be <usermessage> or <assertions>`
+                `repeat children must be <usermessage>, <assertions> or <metric>`
             );
           }
           if (u.type === "message") {
@@ -668,6 +694,20 @@ Examples:
             });
             sc.sink.push(summary);
             if (!summary.passed) sc.stopped = true;
+          } else if (u.type === "metric") {
+            await this.runMetricBlock(u, flowResult, {
+              env: assertCtx.env,
+              flowDir: assertCtx.flowDir,
+              cwd: process.cwd(),
+              flowName: flow.name,
+              scenario: { ...activeScenario },
+              baseUrl: deployUrl ?? undefined,
+            }, async () => {
+              for (const c of u.children ?? []) {
+                if (sc.stopped) break;
+                await runUnit(c, sc, inRepeat);
+              }
+            });
           }
           // other step types can't run in a message-adapter flow — skipped
         };
@@ -726,6 +766,67 @@ Examples:
       description: unit.description,
       repeat: { runs: num, succeeded: ok, needed, failures },
     };
+  }
+
+  /**
+   * Run a <metric>/<stopwatch> block: resolve the collect= collectors,
+   * run the children, then record each measured value under
+   * result.metrics[]. A collector missing from the registry or returning
+   * null is "unavailable" — skipped with a note, or an error under
+   * --fail-on-unavailable-metric. Collection runs in finally so
+   * measurements land even when a child fails.
+   */
+  private async runMetricBlock(
+    step: ParsedStep,
+    result: FlowResult,
+    ctx: FlowMetricContext,
+    runChildren: () => Promise<void>,
+  ): Promise<void> {
+    const id = step.name ?? "metric";
+    const collectors: FlowMetricCollector[] = [];
+    for (const n of step.collect ?? ["duration"]) {
+      if (!hasFlowMetric(n)) {
+        if (this.failOnUnavailableMetric) {
+          throw new Error(
+            `<metric id="${id}"> requested metric '${n}' but no collector is ` +
+              `registered under that name — install a plugin declaring it via ` +
+              `axn-dev.flowMetrics, or remove it from collect=`,
+          );
+        }
+        this.progress(`    metric '${n}' unavailable — skipped`);
+        continue;
+      }
+      collectors.push(await flowMetric(n));
+    }
+    const states = await Promise.all(collectors.map((c) => c.begin?.(ctx)));
+    try {
+      await runChildren();
+    } finally {
+      for (let i = 0; i < collectors.length; i++) {
+        const c = collectors[i];
+        let value: number | null = null;
+        let failed: unknown;
+        try {
+          value = await c.collect(ctx, states[i]);
+        } catch (err) {
+          failed = err;
+        }
+        if (value !== null) {
+          (result.metrics ??= []).push({ id, name: c.name, value, unit: c.unit });
+          this.progress(`    metric '${id}' ${c.name}: ${value}${c.unit ?? ""}`);
+        } else if (this.failOnUnavailableMetric) {
+          throw new Error(
+            `metric '${c.name}' unavailable for <metric id="${id}">` +
+              (failed ? ` — ${failed instanceof Error ? failed.message : String(failed)}` : ""),
+          );
+        } else {
+          this.progress(
+            `    metric '${c.name}' unavailable — skipped` +
+              (failed ? ` (${failed instanceof Error ? failed.message : String(failed)})` : ""),
+          );
+        }
+      }
+    }
   }
 
   /** Nested <assert> children of a step — evaluate against that step's own
@@ -802,6 +903,22 @@ Examples:
           });
           scope.sink.push(summary);
           if (!summary.passed) scope.stopped = true;
+          return;
+        }
+        if (step.type === "metric") {
+          await this.runMetricBlock(step, flowResult, {
+            env,
+            flowDir: dirname(this._resolvedFilePath!),
+            cwd: process.cwd(),
+            flowName: flow.name,
+            scenario: flow.scenarios[0] ? { ...flow.scenarios[0] } : undefined,
+            baseUrl: deployUrl ?? undefined,
+          }, async () => {
+            for (const child of step.children ?? []) {
+              if (scope.stopped) break;
+              await processStep(child, scope);
+            }
+          });
           return;
         }
         if (
@@ -931,6 +1048,7 @@ Examples:
           env,
           tsxBin: this.resolveTsx(),
           adapterPathFor,
+          failOnUnavailableMetric: this.failOnUnavailableMetric,
         });
       }
 
@@ -939,8 +1057,13 @@ Examples:
       // evaluated against the output accumulated so far. A failed verification
       // stops the flow (later steps are skipped).
       const units = flow.steps;
-      // <video> children are steps too — flatten for the checks below.
-      const flatUnits = units.flatMap((u) => ((u.type === "video" || u.type === "repeat") ? [u, ...(u.children ?? [])] : [u]));
+      // <video>/<repeat>/<metric> children are steps too — flatten for
+      // the checks below.
+      const flatUnits = units.flatMap((u) =>
+        (u.type === "video" || u.type === "repeat" || u.type === "metric")
+          ? [u, ...(u.children ?? [])]
+          : [u]
+      );
       const tsScriptSteps = flatUnits.filter((s) => s.type === "script" && (!s.adapter || s.adapter === "tsAdapter"));
       const hasMessageStep = flatUnits.some(
         (s) =>
@@ -1152,6 +1275,26 @@ Examples:
             });
             scope.sink.push(summary);
             if (!summary.passed) scope.stopped = true;
+          } else if (unit.type === "metric") {
+            // Flush before and after so the measurement covers the batch
+            // that actually ran the children — script steps execute at
+            // flush time, not when queued.
+            await flush();
+            await this.runMetricBlock(unit, flowResult, {
+              env,
+              flowDir,
+              cwd: process.cwd(),
+              flowName: flow.name,
+              scenario: { ...scenario },
+              baseUrl,
+            }, async () => {
+              for (const [j, child] of (unit.children ?? []).entries()) {
+                if (scope.stopped) break;
+                await processUnit(child, j, scope);
+              }
+              if (scope.stopped) batch = [];
+              else await flush();
+            });
           } else if (unit.type === "assertions") {
             await flush();
             await evalBlock(unit.assertions ?? [], scope);
@@ -1206,6 +1349,20 @@ Examples:
             await this.evalStepAsserts(unit, stdout, scope, assertCtx, exitCode, Date.now() - t0);
           } else if (unit.type === "assertions") {
             await evalBlock(unit.assertions ?? [], scope);
+          } else if (unit.type === "metric") {
+            await this.runMetricBlock(unit, flowResult, {
+              env,
+              flowDir,
+              cwd: process.cwd(),
+              flowName: flow.name,
+              scenario: { ...scenario },
+              baseUrl,
+            }, async () => {
+              for (const child of unit.children ?? []) {
+                if (scope.stopped) break;
+                await processSeq(child, scope);
+              }
+            });
           } else if (unit.type === "extract") {
             throw new Error(`<extract> needs a browser page — use a tsAdapter flow with orchestrator= or runner="pw"`);
           } else if (unit.type === "repeat") {
@@ -1307,14 +1464,24 @@ Examples:
 
   /** --report: write an additional machine-readable report at the
    * requested path — JSON or JUnit XML for CI test reporting. */
-  private writeExtraReport(results: FlowResult[]): void {
+  private writeExtraReport(results: FlowResult[], durationMs: number): void {
     if (!this.reportPath) return;
     const path = resolve(process.cwd(), this.reportPath);
     mkdirSync(dirname(path), { recursive: true });
+    const git = this._resolvedFilePath ? gitInfoFor(dirname(this._resolvedFilePath)) : null;
     const content =
       this.reportFormat === "junit"
         ? toJUnitXml(results)
-        : JSON.stringify({ timestamp: new Date().toISOString(), flows: results }, null, 2);
+        : JSON.stringify(
+            {
+              timestamp: new Date().toISOString(),
+              durationMs,
+              ...(git ? { git } : {}),
+              flows: results,
+            },
+            null,
+            2,
+          );
     writeFileSync(path, content);
     console.log(`Report written to ${path}`);
   }

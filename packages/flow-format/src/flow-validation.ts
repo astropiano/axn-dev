@@ -107,6 +107,17 @@ function checkStep(step: ParsedStep, where: string): void {
         throw new Error(`${at("repeat")} has no child steps`);
       }
       break;
+    case "metric":
+      if (!step.name?.trim()) {
+        throw new Error(`${at("metric")} requires an 'id' attribute`);
+      }
+      if (!step.children?.length) {
+        throw new Error(`${at("metric")} wraps no steps`);
+      }
+      if (step.collect?.some((n) => !n.trim())) {
+        throw new Error(`${at("metric")} has an empty metric name in 'collect'`);
+      }
+      break;
     case "extract":
       if (!step.selector) {
         throw new Error(`${at("extract")} requires a 'selector' attribute`);

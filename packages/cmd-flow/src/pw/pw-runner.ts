@@ -30,6 +30,7 @@ interface PwUnit {
   success?: number;
   attr?: string;
   url?: string;
+  collect?: string[];
 }
 
 function pwCliPath(): string {
@@ -61,6 +62,7 @@ function toUnit(step: ParsedStep, ctx: {
     success: step.success,
     attr: step.attr,
     url: step.url,
+    collect: step.collect,
   };
   if (step.type === "script" && (!step.adapter || step.adapter === "tsAdapter")) {
     if (step.src) {
@@ -86,8 +88,9 @@ export async function runFlowWithPlaywright(opts: {
   env: Record<string, string>;
   tsxBin: string;
   adapterPathFor: (step: ParsedStep) => string | null;
+  failOnUnavailableMetric?: boolean;
 }): Promise<FlowResult> {
-  const { flow, filePath, baseUrl, env, tsxBin, adapterPathFor } = opts;
+  const { flow, filePath, baseUrl, env, tsxBin, adapterPathFor, failOnUnavailableMetric } = opts;
   const flowDir = dirname(filePath);
   const start = Date.now();
 
@@ -108,6 +111,7 @@ export async function runFlowWithPlaywright(opts: {
     messageAdapter: flow.scenarios.find((s) => s.adapter)?.adapter,
     model: flow.models[0],
     units: flow.steps.map((s) => toUnit(s, { env, flowDir, runDir, adapterPathFor })),
+    failOnUnavailableMetric,
   };
 
   const payloadFile = join(runDir, "payload.json");
@@ -130,7 +134,7 @@ export async function runFlowWithPlaywright(opts: {
 
   const out = existsSync(payload.outFile)
     ? JSON.parse(readFileSync(payload.outFile, "utf-8"))
-    : { outputs: [], evidence: [], steps: [], lastExit: 0 };
+    : { outputs: [], evidence: [], metrics: [], steps: [], lastExit: 0 };
 
   let passed = exitCode === 0;
   let error: string | undefined;
@@ -170,6 +174,7 @@ export async function runFlowWithPlaywright(opts: {
         description: s.description,
       })),
     response: (out.outputs ?? []).join("\n"),
+    metrics: out.metrics,
     evidence: out.evidence,
     durationMs: Date.now() - start,
   };

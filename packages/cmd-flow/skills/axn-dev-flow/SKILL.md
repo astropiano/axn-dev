@@ -1,11 +1,11 @@
 ---
 name: axn-dev-flow
-description: Run XML-defined flow tests against scenarios, deployed devices, or any deployment URL with `axn-dev flow`. Supports the built-in tsAdapter (TypeScript/Playwright scripts), pluggable adapters (http, keycloak, custom tags), readiness checks, orchestrators, and JSON report output.
+description: Run XML- or Gherkin (.feature)-defined flow tests against scenarios, deployed devices, or any deployment URL with `axn-dev flow`. Supports the built-in tsAdapter (TypeScript/Playwright scripts), pluggable adapters (http, keycloak, custom tags), readiness checks, orchestrators, and JSON report output.
 ---
 
 # axn-dev flow Skill
 
-`axn-dev flow` runs XML-defined tests against Docker Compose scenarios, deployed devices (`-i`), or any already-running deployment (`--base-url` / `url=` on `<scenario>`). A flow describes which scenario to start, which model/adapter to use, the steps to execute, and assertions to verify.
+`axn-dev flow` runs tests defined in XML or Gherkin (`.feature`) against Docker Compose scenarios, deployed devices (`-i`), or any already-running deployment (`--base-url` / `url=` on `<scenario>`). A flow describes which scenario to start, which model/adapter to use, the steps to execute, and assertions to verify.
 
 ## When to use this skill
 
@@ -22,6 +22,7 @@ description: Run XML-defined flow tests against scenarios, deployed devices, or 
 <integration-repo>/                # e.g. app-integration
 ├── flows/
 │   ├── example.xml                # one or more <flow> definitions
+│   ├── example.feature            # or Gherkin + YAML frontmatter (one or more Scenarios)
 │   └── .reports/                  # generated JSON reports (gitignored)
 └── scenarios/
     └── app-dev/
@@ -60,6 +61,54 @@ description: Run XML-defined flow tests against scenarios, deployed devices, or 
   </flow>
 </flows>
 ```
+
+## Gherkin (.feature) format
+
+A `.feature` file is an alternative notation: YAML frontmatter carries the
+file-level config (scenarios, env, models, orchestrator, runner, adapter,
+`base-url`, tags, `include` dirs), each `Scenario` becomes a flow.
+Semantics are custom — deterministic patterns, no step-definition matching
+— but the file stays parseable as ordinary Gherkin.
+
+```gherkin
+---
+scenarios:
+  - name: app-dev
+    service: app-server
+    adapter: http
+env:
+  MY_VAR: value
+models:
+  - { provider: ollama, name: llama3.1:latest }
+---
+
+Feature: example - how late is it
+
+  Scenario: asking about the time
+    Given step "db-cleanup"           # step-file ref (steps/*.xml)
+    When script "steps/invite.ts"
+    When the user says "What time is it?"
+    Then the output contains "time"
+    And there is 1 response
+```
+
+- **Producing steps**: `step "name"` / `step file "p.xml"` / `script "x.ts"`
+  / `the user says "…"` (+ `"""` docstring) / `picture` / `extract` / bare
+  ident → custom adapter tag. `k=v` tokens → args; `adapter=`/`desc=` → fields.
+  `| k | v |` tables under a step → args.
+- **Assertions** (`Then`/`And`): `the output contains "x"`, `the new output
+  contains "x"` (fresh), `there is|are N responses`, `the exit code is N`,
+  `it took less than|between … ms`, `the page matches "ref.png"`,
+  `"sel" matches "ref.png"`, `an llm judges "rubric" [using "judge"]`,
+  `script "x.ts" passes`, plus generic `assert <that> [value] [k=v] [flags]`.
+- **Blocks** (custom, `*`-prefixed): `* video "x":` / `* repeat N times at
+  80%:` / `* stopwatch "id":` — children are the deeper-indented lines.
+- A `Then` indented deeper than a step binds to that step (nested assert).
+- `Background:` steps prepend to every scenario; `@tags` → flow tags;
+  `Scenario Outline` + `Examples` fan out into flows (row merges into env,
+  `<col>` substitutes).
+- Frontmatter is file-level: all scenarios share config — divergent flows
+  go in separate files. Step files stay `.xml`.
 
 ### Elements
 
@@ -310,7 +359,7 @@ axn-dev flow list-adapters
 
 ## How it works
 
-1. `axn-dev flow` reads the XML file.
+1. `axn-dev flow` reads the flow file (`.xml` or `.feature`).
 2. It starts the requested scenario if it is not already running (for adapters that declare `wantsScenario`, and without `-i`).
 3. Waits for the scenario's readiness probe (or the service's published port).
 4. For each flow and each configured model, it dispatches steps to the selected adapter, or runs `<step>`/`<script>` scripts (through an `orchestrator` if configured).
@@ -393,5 +442,6 @@ ls flows/.reports/
 - `packages/cmd-flow/src/flow.ts` — main `flow` command implementation
 - `packages/cmd-flow/src/adapters/http.ts` — bundled generic HTTP adapter
 - `packages/flow-format/src/flow-util.ts` — XML parser and flow types
+- `packages/flow-format/src/flow-gherkin.ts` — .feature parser (grammar spec in the header comment)
 - `packages/core/src/flow-adapter.ts` — adapter registry (lazy load, tag routing, `extends`)
 - `<integration-repo>/flows/*.xml` — flow files

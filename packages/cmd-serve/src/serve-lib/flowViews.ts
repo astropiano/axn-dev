@@ -325,6 +325,7 @@ function stepKindLabel(step: ParsedStep): string {
   if (step.type === "picture") return "picture";
   if (step.type === "video") return "video";
   if (step.type === "repeat") return "repeat";
+  if (step.type === "metric") return "metric";
   if (step.type === "extract") return "extract";
   const runner = step.runner ?? "";
   const lang = step.lang ?? "";
@@ -381,6 +382,16 @@ function renderStepCard(step: ParsedStep, index: number): string {
     ? `<div class="evidence-meta"><span class="menu-meta">runs ${step.num ?? "?"}× — block passes at ≥${Math.round((step.success ?? 1) * 100)}% success</span></div>${repeatChildren}`
     : "";
 
+  const metricChildren = step.type === "metric" && step.children?.length
+    ? `<ul class="step-asserts video-children">${step.children.map((c) =>
+        `<li>${stepKindBadge(c)} ${c.src ? `<code>${escapeHtml(c.src)}</code> ` : ""}${c.description ? escapeHtml(c.description) : (c.value ? `<code>${escapeHtml(c.value)}</code>` : "")}</li>`
+      ).join("\n")}</ul>`
+    : "";
+
+  const metricMeta = step.type === "metric"
+    ? `<div class="evidence-meta">${step.name ? `<code>${escapeHtml(step.name)}</code>` : ""}<span class="menu-meta">collects ${escapeHtml((step.collect ?? ["duration"]).join(", "))} over the enclosed steps</span></div>${metricChildren}`
+    : "";
+
   return `
     <div class="step-card">
       <div class="step-head">
@@ -396,6 +407,7 @@ function renderStepCard(step: ParsedStep, index: number): string {
       ${pictureMeta}
       ${videoMeta}
       ${repeatMeta}
+      ${metricMeta}
     </div>
   `;
 }
@@ -738,6 +750,12 @@ export function flowReportHtml(
       ? `<div class="section-title" style="margin-top: 1.5rem;">Evidence</div><div class="evidence-grid">${evidenceItems}</div>`
       : "";
 
+    const metricsLine = entry.metrics && entry.metrics.length > 0
+      ? `<div class="menu-meta" style="margin-bottom: 1rem;">metrics: ${entry.metrics
+          .map((m) => `<code>${escapeHtml(m.id)}</code> ${escapeHtml(m.name)}=${m.value}${m.unit ? escapeHtml(m.unit) : ""}`)
+          .join(" · ")}</div>`
+      : "";
+
     return `
       <div class="table-container" style="margin-bottom: 1rem;">
         <table class="scenario-table">
@@ -755,6 +773,7 @@ export function flowReportHtml(
           <tbody>${assertionRows}</tbody>
         </table>
       </div>
+      ${metricsLine}
       ${manualStepsTable}
       ${evidenceSection}
       ${entry.error ? `<div class="flow-error"><strong>Error:</strong><pre>${escapeHtml(entry.error)}</pre></div>` : ""}
@@ -769,8 +788,9 @@ export function flowReportHtml(
         <h2 class="flow-title">Flow report</h2>
         <span class="meta-badge repo-badge">${escapeHtml(file.split("/").pop() ?? file)}</span>
         ${flowName ? `<span class="meta-badge branch-badge">${escapeHtml(flowName)}</span>` : ""}
+        ${report.git ? `<span class="meta-badge branch-badge" title="${escapeHtml(report.git.commit)}">${escapeHtml(report.git.branch ?? "detached")}@${escapeHtml(report.git.commit.slice(0, 8))}${report.git.clean ? "" : " · dirty"}</span>` : ""}
       </div>
-      <p class="description">${escapeHtml(fmtTimestamp(report.timestamp))} · ${entries.length} entr${entries.length === 1 ? "y" : "ies"}</p>
+      <p class="description">${escapeHtml(fmtTimestamp(report.timestamp))} · ${entries.length} entr${entries.length === 1 ? "y" : "ies"}${report.durationMs !== undefined ? ` · ${fmtDuration(report.durationMs)}` : ""}</p>
       <div class="report-path">
         <code id="report-path">${escapeHtml(file)}</code>
         <button type="button" class="btn btn-secondary btn-sm" onclick="copyReportPath()">Copy path</button>

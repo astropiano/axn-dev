@@ -15,10 +15,12 @@ import {
   pluginScenarioDrivers,
   pluginFlowAdapters,
   pluginFlowJudges,
+  pluginFlowMetrics,
   pluginDeviceEnvResolvers,
   registerScenarioDriver,
   registerFlowAdapter,
   registerFlowJudge,
+  registerFlowMetric,
   registerDeviceEnvResolver,
 } from "@axn-dev/core";
 import { InitCommand } from "./commands/init.js";
@@ -63,6 +65,10 @@ for (const pkg of plugins) {
   // Flow judges — names register now, judge modules load on first judge="name".
   for (const spec of pluginFlowJudges(pkg)) {
     registerFlowJudge(spec);
+  }
+  // Flow metrics — names register now, collectors load on first collect="name".
+  for (const spec of pluginFlowMetrics(pkg)) {
+    registerFlowMetric(spec);
   }
   // Device-env resolvers — specs register now, module loads on first -i use.
   for (const spec of pluginDeviceEnvResolvers(pkg)) {
