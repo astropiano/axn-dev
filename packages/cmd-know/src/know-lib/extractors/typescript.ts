@@ -5,7 +5,7 @@ import { buildChunks, scanUnits } from "./scanner.js";
  * Extract TypeScript / JavaScript classes, interfaces and their methods.
  */
 export class TypeScriptExtractor implements Extractor {
-  extract(text: string) {
+  async extract(text: string) {
     const classRe = /(?:^|\n)\s*(?:export\s+|default\s+|abstract\s+)*(?:class|interface)\s+(\w+)(?:\s*<[^>]+>)?\s*(?:extends\s+\w+)?(?:\s+implements\s+[^{]+)?\s*(?:\{|\n)/g;
     const methodRe = /(?:^|\n)\s*(?:(?:public|private|protected|readonly|static|async|abstract|get|set)\s+)*(\w+|\[string\])\s*\([^)]*\)\s*(?::\s*[^{;=]+)?(?:\s*=>\s*\{|\s*\{|\s*;)/g;
     const functionRe = /(?:^|\n)\s*(?:export\s+|default\s+)?(?:async\s+)?function\s+(\w+)\s*[\(<]/g;

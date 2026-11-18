@@ -5,8 +5,8 @@ import bm25 from "wink-bm25-text-search";
 import winkNLP from "wink-nlp";
 // @ts-ignore - wink-eng-lite-web-model types may not resolve
 import model from "wink-eng-lite-web-model";
-import type { KnowItem, Chunk, BM25SearchResult, VectorSearchResult, SearchResult, CorpusConfig } from "./types.js";
-import { embedText } from "./vector.js";
+import type { KnowItem, Chunk, BM25SearchResult, SearchResult, CorpusConfig } from "./types.js";
+import type { VectorStore } from "./vectorStore.js";
 
 const nlp = winkNLP(model);
 const its = nlp.its;
@@ -27,6 +27,70 @@ function prepTask(text: string): string[] {
   return tokens;
 }
 
+/**
+ * Words for the title field: each identifier whole — so the exact name
+ * `AbstractRepositoryTask` matches — and split at its camelCase humps — so
+ * "repository task" matches too.
+ */
+function prepTitle(text: string): string[] {
+  const words = text.replace(/[^A-Za-z0-9]+/g, " ");
+  const humps = words.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
+  return [...prepTask(words), ...(humps === words ? [] : prepTask(humps))];
+}
+
+/**
+ * The names a chunk is known by, without its package: `pkg.Outer.Type.run(String)`
+ * becomes `Outer.Type.run(String)`. Package segments are left out so a query
+ * word like "module" doesn't lift every class in a `module` package.
+ */
+export function chunkTitle(chunk: Chunk): string {
+  const path = chunk.titlePath ?? chunk.title ?? "";
+  const segments = path.split(".");
+  const firstName = segments.findIndex((s) => !/^[a-z_][a-z0-9_]*$/.test(s));
+  return firstName > 0 ? segments.slice(firstName).join(".") : path;
+}
+
+/**
+ * Query words that name a symbol rather than describe one: a camelCase or
+ * PascalCase identifier (`applyDeltas`, `AbstractRepositoryTask`), or a dotted
+ * one (`ModuleManagerImpl.applyDeltas`). A plain word like "module" is not one.
+ */
+export function identifiersIn(query: string): string[] {
+  return query
+    .split(/\s+/)
+    .filter((w) => /^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$/.test(w) && /[a-z][A-Z]|\.|_|^[A-Z][a-z0-9]+[A-Z]/.test(w));
+}
+
+/** Does the chunk's name end with `identifier`, at a name boundary? `Type.member(…)` matches `member` and `Type.member`. */
+function namedBy(chunk: Chunk, identifier: string): boolean {
+  const name = chunkTitle(chunk).replace(/\(.*$/, "");
+  return name === identifier || name.endsWith(`.${identifier}`);
+}
+
+/** Bump when the indexed fields change, so `index` rebuilds older index files. */
+export const BM25_INDEX_VERSION = 2;
+
+/** A chunk's names weigh more than its body: they are what a lookup by name is after. */
+const FIELD_WEIGHTS = { title: 3, text: 1 };
+
+function newEngine() {
+  const engine = bm25();
+  engine.defineConfig({ fldWeights: FIELD_WEIGHTS });
+  engine.definePrepTasks([prepTask]);
+  engine.definePrepTasks([prepTitle], "title");
+  return engine;
+}
+
+/** Does `indexPath` hold an index in the current format? */
+export function isCurrentBM25Index(indexPath: string): boolean {
+  if (!existsSync(indexPath)) return false;
+  try {
+    return JSON.parse(readFileSync(indexPath, "utf-8")).version === BM25_INDEX_VERSION;
+  } catch {
+    return false;
+  }
+}
+
 interface ChunkRef {
   path: string;   // absolute file path
   offset: number; // chunk offset within that file
@@ -34,6 +98,7 @@ interface ChunkRef {
 
 interface IndexDoc {
   id: string;   // path:offset
+  title: string;
   text: string;
 }
 
@@ -42,9 +107,7 @@ interface IndexDoc {
  * Each chunk is indexed as its own BM25 document.
  */
 export function buildBM25Index(items: KnowItem[], indexPath: string): void {
-  const engine = bm25();
-  engine.defineConfig({ fldWeights: { text: 1 } });
-  engine.definePrepTasks([prepTask]);
+  const engine = newEngine();
 
   const refs: ChunkRef[] = [];
   let docIdx = 0;
@@ -54,6 +117,7 @@ export function buildBM25Index(items: KnowItem[], indexPath: string): void {
       refs.push({ path: item.path, offset: chunk.offset });
       const doc: IndexDoc = {
         id: `${item.path}:${chunk.offset}`,
+        title: chunkTitle(chunk),
         text: chunk.text,
       };
       engine.addDoc(doc, docIdx++);
@@ -63,7 +127,7 @@ export function buildBM25Index(items: KnowItem[], indexPath: string): void {
   // wink-bm25 requires at least 3 documents to consolidate
   const MIN_DOCS = 3;
   for (let pad = refs.length; pad < MIN_DOCS; pad++) {
-    engine.addDoc({ id: `__pad_${pad}`, text: "" }, docIdx++);
+    engine.addDoc({ id: `__pad_${pad}`, title: "", text: "" }, docIdx++);
     refs.push({ path: `__pad_${pad}`, offset: -1 });
   }
 
@@ -71,6 +135,7 @@ export function buildBM25Index(items: KnowItem[], indexPath: string): void {
 
   // Serialize: store the index data alongside a chunk lookup table
   const serialized = {
+    version: BM25_INDEX_VERSION,
     index: engine.exportJSON(),
     refs,
   };
@@ -92,17 +157,20 @@ export function searchBM25Index(
   const serialized = JSON.parse(readFileSync(indexPath, "utf-8"));
   const refs: ChunkRef[] = serialized.refs;
 
-  const engine = bm25();
-  engine.defineConfig({ fldWeights: { text: 1 } });
-  engine.definePrepTasks([prepTask]);
+  const engine = newEngine();
   engine.importJSON(serialized.index);
 
   const rawResults: [number, number][] = engine.search(query, topN);
 
   const itemsByPath = new Map<string, KnowItem>(items.map((i) => [i.path, i]));
 
-  return rawResults
-    .slice(0, topN)
+  // BM25 normalises by the whole chunk's length, so a class whose chunk is its
+  // entire body loses to a short note that merely mentions its name. A query
+  // naming a symbol is a lookup: the symbols with that exact name come first.
+  const exact = exactMatches(items, identifiersIn(query), query, rawResults[0]?.[1] ?? 1);
+  const exactKeys = new Set(exact.map((r) => `${r.path}:${r.chunkOffset}`));
+
+  const ranked = rawResults
     .map(([docIdx, score]) => {
       const ref = refs[docIdx];
       if (!ref || ref.offset === -1) return undefined as any;
@@ -117,9 +185,39 @@ export function searchBM25Index(
         chunkOffset: ref.offset,
         title: chunk.title,
         titlePath: chunk.titlePath,
+        startLine: chunk.startLine,
       };
     })
-    .filter((r): r is BM25SearchResult => r !== undefined && r.path !== undefined);
+    .filter((r): r is BM25SearchResult => r !== undefined && r.path !== undefined)
+    .filter((r) => !exactKeys.has(`${r.path}:${r.chunkOffset}`));
+  return [...exact, ...ranked].slice(0, topN);
+}
+
+/**
+ * The chunks named exactly by one of `identifiers`, types before members —
+ * the type is what an exact type name asks for.
+ * @param query picks each match's snippet.
+ * @param score reported for each match; a match ranks by name, not by score.
+ */
+export function exactMatches(items: KnowItem[], identifiers: string[], query = identifiers.join(" "), score = 0): BM25SearchResult[] {
+  if (identifiers.length === 0) return [];
+  const exact: BM25SearchResult[] = [];
+  for (const item of items) {
+    for (const chunk of item.chunks) {
+      if (!identifiers.some((id) => namedBy(chunk, id))) continue;
+      exact.push({
+        path: item.path,
+        score,
+        exact: true,
+        snippet: bestSnippet(chunk, query),
+        chunkOffset: chunk.offset,
+        title: chunk.title,
+        titlePath: chunk.titlePath,
+        startLine: chunk.startLine,
+      });
+    }
+  }
+  return exact.sort((a, b) => Number(a.titlePath?.includes("(") ?? false) - Number(b.titlePath?.includes("(") ?? false));
 }
 
 /**
@@ -148,69 +246,26 @@ function bestSnippet(chunk: Chunk, query: string): string {
 }
 
 /**
- * Generate embeddings for all chunks in items that lack them.
+ * Ranked chunk lists for a query, one per engine the corpus uses: BM25 and/or
+ * vector. They stay separate because their scores are not comparable; the
+ * caller fuses them by rank.
+ * @param store the corpus's vectors; required for vector and hybrid corpora.
  */
-export async function generateEmbeddings(items: KnowItem[]): Promise<void> {
-  for (const item of items) {
-    for (const chunk of item.chunks) {
-      if (!chunk.embedding) {
-        chunk.embedding = await embedText(chunk.text);
-      }
-    }
-  }
-}
-
-/**
- * Unified indexing entry point: decides what to build based on corpus config.
- */
-export async function buildIndex(items: KnowItem[], indexPath: string, config: CorpusConfig): Promise<void> {
-  if (config.indexing === "vector" || config.indexing === "hybrid") {
-    await generateEmbeddings(items);
-  }
-  if (config.indexing === "bm25" || config.indexing === "hybrid") {
-    buildBM25Index(items, indexPath);
-  }
-  // For pure vector mode, we don't write a separate index file; embeddings live in item YAMLs.
-}
-
-/**
- * Unified search entry point: delegates to BM25, vector, or hybrid.
- */
-export async function search(
+export async function searchLists(
   indexPath: string,
   items: KnowItem[],
+  store: VectorStore | null,
   config: CorpusConfig,
   query: string,
   topN: number = 5
-): Promise<SearchResult[]> {
-  if (config.indexing === "bm25") {
-    return searchBM25Index(indexPath, items, query, topN);
+): Promise<SearchResult[][]> {
+  const lists: SearchResult[][] = [];
+  if (config.indexing === "bm25" || config.indexing === "hybrid") {
+    lists.push(searchBM25Index(indexPath, items, query, topN));
   }
-  if (config.indexing === "vector") {
+  if ((config.indexing === "vector" || config.indexing === "hybrid") && store) {
     const { bruteForceCosineSearch } = await import("./vector.js");
-    return bruteForceCosineSearch(items, query, topN);
+    lists.push(await bruteForceCosineSearch(store, items, query, topN));
   }
-  // hybrid: BM25 recall + vector re-rank
-  const bm25 = searchBM25Index(indexPath, items, query, topN * 2); // fetch more to re-rank
-  const { bruteForceCosineSearch } = await import("./vector.js");
-  const vec = await bruteForceCosineSearch(items, query, topN * 2);
-  // Merge by path+chunk, keep best score (BM25 score or similarity)
-  const map = new Map<string, SearchResult>();
-  for (const r of bm25) {
-    map.set(`${r.path}:${r.chunkOffset}`, r);
-  }
-  for (const r of vec) {
-    const key = `${r.path}:${r.chunkOffset}`;
-    const existing = map.get(key);
-    if (!existing || ("similarity" in r && r.similarity > (config.vector?.threshold ?? 0.7))) {
-      map.set(key, r);
-    }
-  }
-  // Sort by score (BM25) or similarity (vector); prioritize similarity for hybrid
-  const results = Array.from(map.values()).sort((a, b) => {
-    const aScore = "similarity" in a ? a.similarity : ("score" in a ? a.score : 0);
-    const bScore = "similarity" in b ? b.similarity : ("score" in b ? b.score : 0);
-    return bScore - aScore;
-  });
-  return results.slice(0, topN);
+  return lists;
 }

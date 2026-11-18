@@ -6,7 +6,7 @@ import { buildChunks } from "./scanner.js";
  * Extract AsciiDoc sections and subsections.
  */
 export class AsciidocExtractor implements Extractor {
-  extract(text: string) {
+  async extract(text: string) {
     const lines = text.split("\n");
     const headings: RawUnit[] = [];
     const startRe = /^(=+)\s+(.+)$/;

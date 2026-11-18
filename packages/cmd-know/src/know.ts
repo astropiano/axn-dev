@@ -1,7 +1,8 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
-import { execFileSync } from "node:child_process";
-import type { Command } from "@axn-dev/core";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { execFileSync, spawnSync } from "node:child_process";
+import { NAVIGATION_QUERIES, navigateCode, type Command, type NavigationQuery } from "@axn-dev/core";
 import {
   resolveAxnDevRoot,
   ensureCorpus,
@@ -10,18 +11,26 @@ import {
   loadAllItems,
   loadCorpusConfig,
   indexPath,
+  vectorsBase,
+  depsPath,
   type Scope,
 } from "./know-lib/storage.js";
-import { hashFile, gitInfo, needsReindex } from "./know-lib/hash.js";
-import { extractChunks } from "./know-lib/chunker.js";
-import { buildIndex, search } from "./know-lib/bm25.js";
+import { hashFile, gitInfo } from "./know-lib/hash.js";
+import { extractChunks, extractCodeFacts, hasCodeFacts } from "./know-lib/chunker.js";
+import { buildBM25Index, exactMatches, isCurrentBM25Index, searchLists } from "./know-lib/bm25.js";
+import { fuseFiles, isTestPath } from "./know-lib/results.js";
+import { codeLocationOf } from "./know-lib/codeLocation.js";
+import { typeReferences } from "./know-lib/typeRefs.js";
+import { dependencyPath, findArtifacts, mergeGraphs, parseDependencyTree, reach, type DepGraph } from "./know-lib/deps.js";
+import { syncVectors } from "./know-lib/vectorIndex.js";
+import { VectorStore } from "./know-lib/vectorStore.js";
 import type { IndexingTechnique, VectorConfig, SearchResult } from "./know-lib/types.js";
 import type { KnowItem } from "./know-lib/types.js";
 
-const KNOW_SUBCOMMANDS = ["add", "index", "find"];
+const KNOW_SUBCOMMANDS = ["add", "index", "find", "add-deps", "deps"];
 const KNOW_FLAGS = [
   "--scope", "-s", "--corpus", "-c", "--indexing", "-i",
-  "--show-toplevel", "-n", "-q", "-C", "--help", "-h",
+  "--show-toplevel", "-n", "-q", "-C", "--include-tests", "--then", "--to", "--reverse", "--depth", "--path-to", "--help", "-h",
 ];
 
 export class KnowCommand implements Command {
@@ -44,6 +53,10 @@ Subcommands:
   add <path>         Track a file (or glob/directory) in a corpus
   index              Re-index changed files in a corpus
   find "<query>"     Search the index and show top matching snippets
+  add-deps <path>    Store a Maven dependency graph in a corpus: a project
+                     directory (runs mvn dependency:tree) or a file of its
+                     output. Repeat to merge several projects.
+  deps <artifact>    What an artifact depends on, transitively
 
 Options:
   --scope, -s <global|project>   Storage scope (default: global)
@@ -52,7 +65,19 @@ Options:
                                  be passed multiple times to search several
                                  corpora at once.
   --indexing, -i <bm25|vector|hybrid>  Indexing technique (default: bm25)
-  -n <number>                    Number of results to show (default: 5, find only)
+  -n <number>                    Number of files to show (default: 5, find only).
+                                 Each file is shown once, at its best match.
+  --include-tests                Also show test sources (find only; hidden by default)
+  --then <callers|callees|implementations|references|impact|path>
+                                 Follow the top code hit with a code navigator
+                                 plugin, e.g. @axn-dev/know-nav-ripwire (find only).
+                                 impact: everything that reaches it, transitively.
+  --to <name>                    For --then path: the symbol the call chain
+                                 should lead to, by exact name (Type.member)
+  --reverse                      What depends on the artifact instead (deps only)
+  --depth <n>                    Stop after n hops (deps only; default: all)
+  --path-to <artifact>           Why the artifact depends on another: the
+                                 shortest chain (deps only)
   --help, -h                     Show this help
 
 Examples:
@@ -63,6 +88,11 @@ Examples:
   axn-dev know find "how to deploy devices"
   axn-dev know find "docker compose" -n 10
   axn-dev know find "auth" -c axn-dev-cli -c my-server
+  axn-dev know find "apply module update deltas" --then callers
+  axn-dev know find installOrUpdateModule --then path --to applyDeltas
+  axn-dev know add-deps ~/git/dx-core
+  axn-dev know deps magnolia-core --reverse --depth 1
+  axn-dev know deps magnolia-dx-core-webapp --path-to jackrabbit-core
 `;
   }
 
@@ -78,6 +108,8 @@ Examples:
       case "add":   return this.add(rest);
       case "index": return this.index(rest);
       case "find":  return this.find(rest);
+      case "add-deps": return this.addDeps(rest);
+      case "deps":  return this.deps(rest);
       default:
         throw new Error(
           `Unknown know subcommand: '${sub}'\nRun 'axn-dev know --help' for usage.`
@@ -150,12 +182,6 @@ Examples:
         chunks: [],
       };
 
-      const git = gitInfo(filePath);
-      if (git) {
-        item.git_repo = git.repo;
-        item.git_commit = git.commit;
-      }
-
       saveItem(axnRoot, corpus, item);
       console.log(`  added: ${filePath}`);
       added++;
@@ -196,6 +222,7 @@ Examples:
     }
 
     let indexed = 0;
+    let contentChanged = false;
     let skipped = 0;
     let missing = 0;
     const updatedItems: KnowItem[] = [];
@@ -208,19 +235,22 @@ Examples:
         continue;
       }
 
+      // Content decides, not the last commit: an uncommitted edit must be re-indexed,
+      // and an unchanged file must cost no git process.
       const currentHash = hashFile(item.path);
-      const git = gitInfo(item.path);
-      const currentCommit = git?.commit;
-
-      if (item.chunks.length > 0 && item.hash && !needsReindex(currentHash, currentCommit, item.hash, item.git_commit)) {
+      // A file indexed before its language recorded code facts is re-read once to add them.
+      if (item.chunks.length > 0 && item.hash === currentHash && (item.code || !hasCodeFacts(item.path))) {
         skipped++;
         updatedItems.push(item);
         continue;
       }
 
       const text = readFileSync(item.path, "utf-8");
-      item.chunks = extractChunks(item.path, text);
+      const hadChunks = item.chunks.length > 0;
+      item.chunks = await extractChunks(item.path, text);
+      item.code = await extractCodeFacts(item.path, text);
       item.hash = currentHash;
+      const git = gitInfo(item.path);
       if (git) {
         item.git_repo = git.repo;
         item.git_commit = git.commit;
@@ -229,6 +259,7 @@ Examples:
       saveItem(axnRoot, corpus, item);
       console.log(`  indexed: ${item.path} (${item.chunks.length} chunks)`);
       indexed++;
+      if (hadChunks || item.chunks.length > 0) contentChanged = true;
       updatedItems.push(item);
     }
 
@@ -236,7 +267,31 @@ Examples:
     if (!config) throw new Error(`Corpus config not found for '${corpus}'`);
     console.log(`\nBuilding ${config.indexing} index for corpus '${corpus}'...`);
     const idxPath = indexPath(axnRoot, corpus);
-    await buildIndex(updatedItems.filter((i) => i.chunks.length > 0), idxPath, config);
+    const withChunks = updatedItems.filter((i) => i.chunks.length > 0);
+
+    // A full BM25 rebuild is most of an unchanged run's time.
+    if ((config.indexing === "bm25" || config.indexing === "hybrid") && (contentChanged || !isCurrentBM25Index(idxPath))) {
+      buildBM25Index(withChunks, idxPath);
+    }
+
+    if (config.indexing === "vector" || config.indexing === "hybrid") {
+      const tty = Boolean(process.stderr.isTTY);
+      const vectors = await syncVectors(withChunks, vectorsBase(axnRoot, corpus), {
+        onProgress: (done, total) => {
+          if (total > 0) process.stderr.write(`  embedding ${done}/${total} chunks${tty ? "\r" : "\n"}`);
+        },
+        onError: (message) => console.warn(`  ${message}`),
+      });
+      if (tty) process.stderr.write("\n");
+      // Their inline vectors now live in the store; rewriting drops them from the YAML.
+      for (const item of vectors.migrated) saveItem(axnRoot, corpus, item);
+      console.log(
+        `Vectors: ${vectors.embedded} embedded, ${vectors.removed} file(s) removed` +
+          (vectors.migrated.length > 0 ? `, ${vectors.migrated.length} file(s) moved out of the item YAMLs` : "") +
+          (vectors.failed > 0 ? `, ${vectors.failed} failed (retried on the next index)` : "") +
+          ".",
+      );
+    }
 
     console.log(
       `Done. ${indexed} indexed, ${skipped} up-to-date, ${missing} missing.`
@@ -252,6 +307,9 @@ Examples:
     let scope: Scope = "global";
     const corpusNames: string[] = [];
     let topN = 5;
+    let includeTests = false;
+    let then: NavigationQuery | null = null;
+    let to: string | null = null;
 
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
@@ -259,6 +317,16 @@ Examples:
         scope = this.parseScope(args[++i]);
       } else if (a === "--corpus" || a === "-c") {
         corpusNames.push(args[++i]);
+      } else if (a === "--include-tests") {
+        includeTests = true;
+      } else if (a === "--then") {
+        const q = args[++i];
+        if (!NAVIGATION_QUERIES.includes(q as NavigationQuery)) {
+          throw new Error(`--then must be one of: ${NAVIGATION_QUERIES.join(", ")}`);
+        }
+        then = q as NavigationQuery;
+      } else if (a === "--to") {
+        to = args[++i];
       } else if (a === "-n") {
         topN = parseInt(args[++i], 10);
         if (isNaN(topN) || topN < 1) throw new Error("-n must be a positive integer");
@@ -270,13 +338,18 @@ Examples:
     }
 
     if (!query) throw new Error('Usage: axn-dev know find "<query>" [options]');
+    if (then === "path" && !to) throw new Error("--then path needs --to <name>: the symbol the path should lead to");
 
     const targets = corpusNames.length > 0
       ? corpusNames
       : [scope === "global" ? "personal" : "project"];
     const axnRoot = resolveAxnDevRoot(scope);
 
-    let allResults: SearchResult[] = [];
+    // Chunks, not files, are ranked: fetch deep enough that grouping by file and
+    // hiding tests still leave topN files.
+    const fetchN = Math.max(topN * 20, 100);
+    const lists: SearchResult[][] = [];
+    const itemsByCorpus = new Map<string, KnowItem[]>();
     let searched = 0;
     let skipped = 0;
 
@@ -290,32 +363,27 @@ Examples:
 
       const idxPath = indexPath(axnRoot, corpus);
 
-      if (config.indexing === "vector") {
-        const items = loadAllItems(axnRoot, corpus);
-        const hasEmbeddings = items.some((i) => i.chunks.some((c) => c.embedding));
-        if (!hasEmbeddings) {
-          console.warn(`No embeddings found for corpus '${corpus}' (${scope}), skipping.`);
-          skipped++;
-          continue;
-        }
-      } else {
-        if (!existsSync(idxPath)) {
-          console.warn(`No index found for corpus '${corpus}' (${scope}), skipping.`);
-          skipped++;
-          continue;
-        }
+      const store = config.indexing === "bm25" ? null : VectorStore.load(vectorsBase(axnRoot, corpus));
+      const missing = [
+        config.indexing !== "vector" && !existsSync(idxPath) ? "BM25 index" : null,
+        config.indexing !== "bm25" && !store ? "vectors" : null,
+      ].filter(Boolean);
+      if (missing.length > 0) {
+        console.warn(`No ${missing.join(" or ")} for corpus '${corpus}' (${scope}); run 'axn-dev know index'. Skipping.`);
+        skipped++;
+        continue;
       }
 
       const items = loadAllItems(axnRoot, corpus);
-      const results = await search(idxPath, items, config, query, topN);
-      for (const r of results) {
-        r.corpus = corpus;
+      itemsByCorpus.set(corpus, items);
+      for (const list of await searchLists(idxPath, items, store, config, query, fetchN)) {
+        for (const r of list) r.corpus = corpus;
+        lists.push(list);
       }
-      allResults = allResults.concat(results);
       searched++;
     }
 
-    if (allResults.length === 0) {
+    if (lists.every((l) => l.length === 0)) {
       if (searched === 0) {
         console.log(`No searchable corpora found for the query. ${skipped} were skipped.`);
       } else {
@@ -324,31 +392,229 @@ Examples:
       return;
     }
 
-    allResults.sort((a, b) => this.resultScore(b) - this.resultScore(a));
-    const top = allResults.slice(0, topN);
+    // Tests leave before fusion, so they take no ranks from production files.
+    const shown = lists.map((l) => (includeTests ? l : l.filter((r) => !isTestPath(r.path))));
+    const hiddenTests = new Set(
+      lists.flat().filter((r) => !includeTests && isTestPath(r.path)).map((r) => `${r.corpus}:${r.path}:${r.chunkOffset}`),
+    ).size;
+    const top = fuseFiles(shown, topN);
+    const testHint = hiddenTests > 0 ? `${hiddenTests} matching test chunk(s) hidden; --include-tests shows them.` : "";
+
+    if (top.length === 0) {
+      console.log(`No results found for: ${query}${testHint ? `\n${testHint}` : ""}`);
+      return;
+    }
 
     console.log(`\n\x1b[32mTop ${top.length} result(s) for:\x1b[0m "${query}"\n`);
 
     for (let i = 0; i < top.length; i++) {
-      const r = top[i];
-      const score = "score" in r ? r.score.toFixed(3) : ("similarity" in r ? r.similarity.toFixed(3) : "0");
-      const label = "score" in r ? "score" : ("similarity" in r ? "similarity" : "score");
+      const { result: r, moreInFile, fused } = top[i];
+      const [label, value] = fused !== undefined
+        ? ["rrf", fused]
+        : "score" in r ? ["score", r.score] : ["similarity", r.similarity];
+      const score = value.toFixed(3);
       const title = r.titlePath ?? r.title;
       const corpusTag = r.corpus ? ` [${r.corpus}]` : "";
-      const header = title ? `${r.path} — ${title}` : r.path;
-      console.log(`\x1b[1m${i + 1}. ${header}\x1b[0m\x1b[2m${corpusTag} (${label}: ${score})\x1b[0m`);
+      const location = r.startLine ? `${r.path}:${r.startLine}` : r.path;
+      const header = title ? `${location} — ${title}` : location;
+      const more = moreInFile > 0 ? `, +${moreInFile} more in this file` : "";
+      console.log(`\x1b[1m${i + 1}. ${header}\x1b[0m\x1b[2m${corpusTag} (${label}: ${score}${more})\x1b[0m`);
       console.log(`   ${r.snippet.replace(/\n/g, "\n   ")}`);
       console.log("");
     }
+    if (testHint) console.log(`\x1b[2m${testHint}\x1b[0m`);
+    if (then) await this.followTopHit(then, top.map((t) => t.result), includeTests, itemsByCorpus, to);
+  }
+
+  /**
+   * Hand the first code symbol among the hits to a code navigator and print
+   * what it finds — the step from "where is it" to "what touches it".
+   */
+  private async followTopHit(
+    query: NavigationQuery,
+    results: SearchResult[],
+    includeTests: boolean,
+    itemsByCorpus: Map<string, KnowItem[]>,
+    to: string | null,
+  ): Promise<void> {
+    const hit = results.find((r) => codeLocationOf(r) !== null);
+    const location = hit && codeLocationOf(hit);
+    if (!hit || !location) {
+      console.log(`\n--then ${query}: none of the results is a code symbol.`);
+      return;
+    }
+    const nameOf = (l: { typeName: string; memberName?: string }) => (l.memberName ? `${l.typeName}.${l.memberName}` : l.typeName);
+    // Implementations belong to the type, even when the hit was one of its members.
+    const symbol = query === "implementations" ? location.typeName : nameOf(location);
+
+    let target: ReturnType<typeof codeLocationOf> = null;
+    if (query === "path") {
+      // --to names a symbol outright, so any word is a name here — even one search would read as plain text.
+      const matches = exactMatches(itemsByCorpus.get(hit.corpus ?? "") ?? [], [to!]);
+      target = matches.map(codeLocationOf).find((l) => l !== null) ?? null;
+      if (!target) {
+        console.log(`\n--then path: no symbol named '${to}' in corpus '${hit.corpus}'; name it exactly, e.g. Type.member.`);
+        return;
+      }
+      if (matches.length > 1) {
+        console.log(`\x1b[2m'${to}' names ${matches.length} symbols; using ${matches[0].titlePath ?? matches[0].path} — qualify it (Type.member) to pick another.\x1b[0m`);
+      }
+    }
+    const navigated = await navigateCode(query, location, target ?? undefined);
+    // For a type, know answers references itself from the uses it recorded at
+    // index time — signatures and fields included, which a navigator may miss.
+    const own = query === "references" && !location.memberName && location.qualifiedName
+      ? typeReferences(itemsByCorpus.get(hit.corpus ?? "") ?? [], location.qualifiedName, location.path)
+      : [];
+    if (!navigated && own.length === 0) {
+      console.log(`\n--then ${query}: no code navigator serves ${location.path}. Install one, e.g. 'axn-dev install --plugin @axn-dev/know-nav-ripwire'.`);
+      return;
+    }
+
+    const seen = new Set<string>();
+    const all = [...(navigated?.hits ?? []), ...own].filter((h) => {
+      const key = `${h.path}:${h.line ?? ""}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    // A path is one chain: hiding a step in a test source would break it.
+    const hits = includeTests || query === "path" ? all : all.filter((h) => !isTestPath(h.path));
+    const sources = [navigated?.navigator, own.length > 0 ? "know" : null].filter(Boolean).join(" + ");
+    const heading = query === "path" ? `Path from ${symbol} to ${nameOf(target!)}` : `${query[0].toUpperCase()}${query.slice(1)} of ${symbol}`;
+    console.log(`\n\x1b[32m${heading}\x1b[0m\x1b[2m (${sources}, ${hits.length} ${query === "path" ? "step(s)" : "hit(s)"})\x1b[0m`);
+    hits.forEach((h, i) => {
+      const where = h.line ? `${h.path}:${h.line}` : h.path;
+      const lead = query === "path" ? `${i === 0 ? "" : "-> "}` : "";
+      console.log(`  ${lead}${where}${h.symbol ? ` — ${h.symbol}` : ""}${h.kind ? `\x1b[2m (${h.kind})\x1b[0m` : ""}`);
+    });
+    const hidden = all.length - hits.length;
+    if (hidden > 0) console.log(`\x1b[2m  ${hidden} hit(s) in test sources hidden; --include-tests shows them.\x1b[0m`);
+    for (const c of navigated?.caveats ?? []) console.log(`\x1b[33m  ⚠ ${c}\x1b[0m`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // add-deps / deps
+  // ---------------------------------------------------------------------------
+
+  private async addDeps(args: string[]): Promise<void> {
+    const { scope, corpus, positional } = this.corpusArgs(args);
+    if (!positional) throw new Error("Usage: axn-dev know add-deps <project-dir|tree-file> [options]");
+    const source = resolve(process.cwd(), positional);
+    if (!existsSync(source)) throw new Error(`Path does not exist: ${source}`);
+
+    const text = statSync(source).isDirectory() ? this.runDependencyTree(source) : readFileSync(source, "utf-8");
+    const parsed = parseDependencyTree(text);
+    if (parsed.artifacts.length === 0) throw new Error(`No dependency tree found in ${source}`);
+
+    const axnRoot = resolveAxnDevRoot(scope);
+    ensureCorpus(axnRoot, corpus);
+    const path = depsPath(axnRoot, corpus);
+    const graph = existsSync(path) ? mergeGraphs(this.readDeps(path), parsed) : parsed;
+    writeFileSync(path, JSON.stringify(graph), "utf-8");
+    const modules = parsed.artifacts.filter((a) => a.module).length;
+    console.log(`Read ${modules} module(s), ${parsed.artifacts.length} artifacts, ${parsed.edges.length} dependencies from ${source}.`);
+    console.log(`Corpus '${corpus}' now holds ${graph.artifacts.length} artifacts, ${graph.edges.length} dependencies.`);
+  }
+
+  /** `mvn dependency:tree` over a project; every module's tree, appended to one file. */
+  private runDependencyTree(dir: string): string {
+    const tmp = mkdtempSync(join(tmpdir(), "axn-know-deps-"));
+    const out = join(tmp, "tree.txt");
+    try {
+      console.log(`Running mvn dependency:tree in ${dir} ...`);
+      // -Dverbose: without it each artifact appears once per module, and most edges are missing.
+      const res = spawnSync("mvn", ["-q", "dependency:tree", "-Dverbose", `-DoutputFile=${out}`, "-DappendOutput=true"], {
+        cwd: dir,
+        encoding: "utf-8",
+      });
+      if (res.error) throw new Error(`mvn is not available: ${res.error.message}`);
+      if (res.status !== 0) {
+        const tail = `${res.stdout}\n${res.stderr}`.trim().split("\n").slice(-5).join("\n");
+        throw new Error(`mvn dependency:tree failed (exit ${res.status}):\n${tail}`);
+      }
+      return readFileSync(out, "utf-8");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  private async deps(args: string[]): Promise<void> {
+    let reverse = false;
+    let maxDepth = Infinity;
+    let pathTo: string | null = null;
+    const rest: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "--reverse") reverse = true;
+      else if (a === "--depth") {
+        maxDepth = parseInt(args[++i], 10);
+        if (isNaN(maxDepth) || maxDepth < 1) throw new Error("--depth must be a positive integer");
+      } else if (a === "--path-to") pathTo = args[++i];
+      else rest.push(a);
+    }
+    const { scope, corpus, positional } = this.corpusArgs(rest);
+    if (!positional) throw new Error("Usage: axn-dev know deps <artifact> [--reverse] [--depth n] [--path-to <artifact>] [options]");
+
+    const path = depsPath(resolveAxnDevRoot(scope), corpus);
+    if (!existsSync(path)) throw new Error(`No dependency graph in corpus '${corpus}' (${scope}). Run 'axn-dev know add-deps <project-dir>' first.`);
+    const graph = this.readDeps(path);
+    const start = this.oneArtifact(graph, positional);
+    if (!start) return;
+
+    if (pathTo) {
+      const target = this.oneArtifact(graph, pathTo);
+      if (!target) return;
+      const chain = dependencyPath(graph, start, target);
+      console.log(chain
+        ? `${chain.join("\n  -> ")}`
+        : `${start} does not depend on ${target} in this graph.`);
+      return;
+    }
+
+    const reached = reach(graph, start, reverse, maxDepth);
+    const versions = new Map(graph.artifacts.map((a) => [a.key, a.versions.join(", ")]));
+    console.log(`\n\x1b[32m${reverse ? "Depended on by" : "Depends on"} ${start}\x1b[0m\x1b[2m (${reached.length}${Number.isFinite(maxDepth) ? `, up to depth ${maxDepth}` : ", transitive"})\x1b[0m`);
+    for (const r of reached) {
+      const via = r.depth > 1 ? `\x1b[2m  via ${r.via}\x1b[0m` : "";
+      console.log(`  ${r.depth}  ${r.key}\x1b[2m ${versions.get(r.key)} (${r.scope})\x1b[0m${via}`);
+    }
+  }
+
+  /** The single artifact a query names, or null after listing the candidates. */
+  private oneArtifact(graph: DepGraph, query: string): string | null {
+    const found = findArtifacts(graph, query);
+    if (found.length === 1) return found[0].key;
+    if (found.length === 0) {
+      console.log(`No artifact matches '${query}'.`);
+    } else {
+      console.log(`'${query}' matches ${found.length} artifacts; name one:`);
+      for (const a of found.slice(0, 20)) console.log(`  ${a.key}`);
+    }
+    return null;
+  }
+
+  private readDeps(path: string): DepGraph {
+    return JSON.parse(readFileSync(path, "utf-8")) as DepGraph;
+  }
+
+  /** --scope/--corpus and the one positional argument shared by add-deps and deps. */
+  private corpusArgs(args: string[]): { scope: Scope; corpus: string; positional: string | null } {
+    let scope: Scope = "global";
+    let corpusName: string | null = null;
+    let positional: string | null = null;
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "--scope" || a === "-s") scope = this.parseScope(args[++i]);
+      else if (a === "--corpus" || a === "-c") corpusName = args[++i];
+      else if (!a.startsWith("-")) positional = a;
+    }
+    return { scope, corpus: corpusName ?? (scope === "global" ? "personal" : "project"), positional };
   }
 
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
-
-  private resultScore(r: SearchResult): number {
-    return "similarity" in r ? r.similarity : ("score" in r ? r.score : 0);
-  }
 
   private parseScope(val: string): Scope {
     if (val === "global" || val === "project") return val;
@@ -398,6 +664,6 @@ Examples:
   }
 
   private isTextFile(name: string): boolean {
-    return /\.(md|txt|ts|js|py|yaml|yml|json|sh|adoc|rst|toml|env|conf|cfg)$/.test(name);
+    return /\.(md|txt|ts|js|py|java|yaml|yml|json|sh|adoc|rst|toml|env|conf|cfg)$/.test(name);
   }
 }

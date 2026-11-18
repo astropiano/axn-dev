@@ -1,0 +1,42 @@
+{
+  "name": "@axn-dev/know-nav-ripwire",
+  "version": "0.1.0",
+  "description": "axn-dev code navigator: ripwire — callers, callees, implementations and references of a search hit",
+  "type": "module",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "axn-dev": {
+    "codeNavigators": [
+      {
+        "name": "ripwire",
+        "extensions": [".java", ".kt", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs", ".cs", ".rb", ".php", ".swift", ".c", ".cc", ".cpp", ".h", ".hpp"]
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "prepublishOnly": "pnpm build"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@axn-dev/core": "*"
+  },
+  "devDependencies": {
+    "@axn-dev/core": "workspace:*"
+  },
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}
