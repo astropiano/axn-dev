@@ -17,11 +17,11 @@ link:docs/plugins.adoc[Writing a Plugin].
 cd axn-dev-cli
 pnpm install
 pnpm build
-./build-link.sh     # builds all packages and npm-links the axn-dev bin globally
+./build-link.sh     # builds all packages and links the axn-dev bin into ~/.local/bin
 axn-dev --help
 ----
 
-For npm-link permission workarounds and the full setup, see link:packages/cli/docs/install.adoc[Install].
+For global-link details and the full setup, see link:packages/cli/docs/install.adoc[Install].
 
 == Repository layout
 
