@@ -5,7 +5,7 @@
 cd axn-dev-cli
 pnpm install
 pnpm build
-./build-link.sh   # builds all packages and npm-links 'axn-dev' globally
+./build-link.sh   # builds all packages and links 'axn-dev' into ~/.local/bin
 
 # Configure your environment (interactive)
 axn-dev init
@@ -24,19 +24,17 @@ After `init`, verify everything works:
 axn-dev list      # Should show available scenarios
 ----
 
-=== Linux global link permissions
+=== Global link
 
-`build-link.sh` runs `npm link` inside `packages/cli`, which links `axn-dev`
-into npm's global prefix. On Linux that may fail with `EACCES` if the
-prefix is not user-owned. Point npm at a user-owned prefix instead:
-
-[source,bash]
-----
-npm config set prefix ~/.local
-----
+`build-link.sh` symlinks the compiled `packages/cli/dist/main.js` into
+`~/.local/bin` (override with `AXN_DEV_BIN_DIR`). A plain symlink is used
+instead of `npm link`/`pnpm link -g` because npm cannot resolve the pnpm
+`workspace:*` protocol and pnpm 10 dropped `link --global`. Node resolves
+the symlink to the real file, so `@axn-dev/*` imports and sibling
+`packages/*` plugin discovery keep working against the workspace.
 
 Ensure `~/.local/bin` is on your `PATH` (e.g. in `~/.zshrc`), reload your
-shell, and rerun `./build-link.sh` from this repository root. The linked
-package resolves `@axn-dev/core` and discovers the sibling `packages/*`
-plugins automatically.
+shell, and rerun `./build-link.sh` from this repository root. The script
+warns if `axn-dev` resolves to a different binary earlier on your `PATH`
+(e.g. a stale install shadowing the link).
 
