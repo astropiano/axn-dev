@@ -13,7 +13,7 @@ axn-dev flow -f flows/example.xml --clean-start --yes   # wipe data and run with
 
 The `--clean-start` flag stops the scenario(s), removes their named Docker volumes, and starts them fresh before the flow runs. It does not rebuild images. It is not compatible with `--infra`.
 
-A flow file describes one or more `<flow>` elements with scenarios, models, a user message, and assertions. The built-in `tsAdapter` runs TypeScript/Playwright scripts; all other adapters come from plugin packages — `http` (generic, bundled with `cmd-flow`), `keycloak` (`@axn-dev/adapter-keycloak`), or any adapter an installed plugin declares — or from script files resolved per step. Assertions: `num_responses`, `contains`, `exitCode`, `duration`, `script`, `screenshot` and `llm`. Reports are written to `flows/.reports/` next to the flow file.
+A flow file describes one or more `<flow>` elements with scenarios, models, a user message, and assertions. The built-in `tsAdapter` runs TypeScript/Playwright scripts; all other adapters come from plugin packages — `http` (generic, bundled with `cmd-flow`), `keycloak` (`@axn-dev/adapter-keycloak`), or any adapter an installed plugin declares — or from script files resolved per step. Assertions: `num_responses`, `contains`, `exitCode`, `duration`, `metric`, `script`, `screenshot` and `llm`. Reports are written to `flows/.reports/` next to the flow file.
 
 === Gherkin flow files (`.feature`)
 
@@ -245,6 +245,66 @@ before the wrapped steps, `collect(ctx, state)` after (also on failure)
 and returns a number, or `null` when the metric is unavailable. Missing
 or unavailable metrics are skipped with a warning;
 `--fail-on-unavailable-metric` turns that into an error instead.
+
+=== Emitted metrics: `AXN_METRIC` lines and `ctx.emitMetric`
+
+Bracket collectors measure the *block* from the outside. For
+measurements only the thing under test can know — paint timing inside a
+running app, memory of a spawned process — a step can *emit* metrics in
+its output: any line starting with `AXN_METRIC ` followed by a JSON
+object is lifted out of the output and recorded in `flows[].metrics[]`.
+
+[source]
+----
+AXN_METRIC {"name":"app.prompt_ms","value":1230,"unit":"ms",
+            "samples":[1200,1260,1230],"better":"lower"}
+----
+
+`name` and `value` are required; `unit`, `samples`, `better`
+(`"lower"|"higher"|"none"`) and `description` are optional. Emitted
+lines are removed before assertions see the output (a `contains` assert
+never trips on them), deduplicated by name per output chunk (last wins —
+emit per-iteration series via `samples`), and recorded unconditionally —
+asserts decide verdicts, collection is free. Plugin (in-process)
+adapters can skip the text channel entirely and call
+`ctx.emitMetric({name, value, …})` instead; the `AXN_METRIC` line is the
+universal form for subprocess adapters and tsAdapter scripts.
+
+Bound an emitted metric like any recorded one:
+
+[source,xml]
+----
+<step adapter="perfstep" action="measure">
+  <assert that="metric" name="app.prompt_ms" max="2000"/>
+</step>
+----
+
+`that="metric"` requires `name=` plus `min=`/`max=` bounds (a numeric
+`value` is shorthand max) and checks the *latest* recorded metric of
+that name — emitted or collector-produced.
+
+=== Report labels, compare and history
+
+Every run writes `flows/.reports/flow-report-<timestamp>.json`; that
+file is the metrics store. `--label <name>` tags the run — stored as
+`report.label` and embedded in the filename
+(`flow-report-<label>-<ts>.json`) — so past runs stay addressable:
+
+[source,bash]
+----
+axn-dev flow -f flows/perf.xml --label before   # baseline
+axn-dev flow -f flows/perf.xml --label after    # candidate
+axn-dev flow compare -f flows/perf.xml before after
+axn-dev flow history -f flows/perf.xml --metric app.prompt_ms
+----
+
+`compare` takes the latest report of each label, aligns the recorded
+metrics by name per flow and prints `A → B`, delta, delta-% and an
+`improved`/`regressed` verdict per the metric's `better` hint.
+`history` lists every recorded metric across the stored reports
+(newest last), with `--label`, `-t` (flow name) and `--metric` filters.
+Older runs stay comparable as long as the JSON files are kept — the
+reports dir is gitignored locally, archive it in CI for trends.
 
 In browser flows, `<extract>` pulls a DOM element into the output stream so the judge sees exactly the rendered answer rather than raw responses:
 

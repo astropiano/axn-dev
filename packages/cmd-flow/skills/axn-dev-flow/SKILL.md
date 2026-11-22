@@ -171,7 +171,7 @@ A step can live in its own `.xml` file (exactly one step element — `<step>`/`<
 
 Self-declared names must not reuse the engine's vocabulary — custom `<steps>` tags, `<step action="name">` refs and step-file basenames. Reserved: the step elements (`usermessage`, `step`, `script`, `assert`, `assertions`, `picture`, `video`, `repeat`, `extract`), structural elements (`flows`, `flow`, `steps`, `scenarios`, `scenario`, `setup`, `models`, `model`, `env`, `var`, `readiness`, `tags`, `tag`, `description`, `tool-mode`, `use-docker`) and the step-ref keywords (`file`, `action`, `include`, `src`). `<file .../>` in `<steps>` or `<step action="file">` fails at load time. Plugin adapters cannot claim these tags either (dropped with a warning; `usermessage` exempt).
 
-Flow files are validated at load: required attributes, known `that` assertion types (`contains`, `num_responses`, `exitCode`, `screenshot`, `llm`, `duration`, `script`) plus their per-type requirements, evidence `name`s, non-empty steps, unique flow names per file.
+Flow files are validated at load: required attributes, known `that` assertion types (`contains`, `num_responses`, `exitCode`, `screenshot`, `llm`, `duration`, `metric`, `script`) plus their per-type requirements, evidence `name`s, non-empty steps, unique flow names per file.
 
 ### Evidence capture
 
@@ -271,6 +271,7 @@ An `<assertions>` group with neither is just bare asserts with extra indentation
 `contains`:: A string that must appear (case-insensitive) in the response/stdout.
 `exitCode`:: (tsAdapter) the process exit code must equal `value`.
 `duration`:: Step wall-clock time in ms — `min`/`max` bounds, or numeric `value` as shorthand max. Needs a producing-step context (nested asserts).
+`metric`:: Bound a recorded metric — `name=` required plus `min`/`max` bounds (numeric `value` = shorthand max). Checks the latest metric of that name recorded in this flow: emitted (`AXN_METRIC` line / `ctx.emitMetric`) or collected (`<metric>` block).
 `script`:: A ts/js assertion script (`src` or `value`), run via tsx: gets the output under test as `$AXN_OUTPUT`, the assert JSON as `$AXN_ASSERT`; exit 0 = pass, stdout becomes the report detail.
 `screenshot`:: Visual regression: captures `url` (default `BASE_URL`) with headless Chromium and compares it against the reference PNG at `value` (relative to the flow file). Antialiasing is tolerated; layout/shape changes fail. Attributes: `selector` (element capture — cropped to the element, so position changes are invisible; select a *container* element or omit it for a whole-page capture to catch moves), `fullPage`, `maxDiff` (fraction of differing pixels, default 0.01), `threshold` (per-pixel color, default 0.1), `viewport` ("WxH", default 1280x800), `wait` (ms or CSS selector). Diffs land in `flows/.reports/screenshots/`; `AXN_FLOW_UPDATE_SCREENSHOTS=1` rewrites the reference. Requires `playwright-core` and a Chromium browser (`npx playwright install chromium`).
 
@@ -306,6 +307,20 @@ An `<assertions>` group with neither is just bare asserts with extra indentation
     <assert that="llm" prompt="states a concrete time" judge="ollama/llama3.1"/>
   </assertions>
 </repeat>
+```
+
+### Metrics: collected and emitted
+
+Two ways land measurements in the report's `flows[].metrics[]`:
+
+- **`<metric id="n" collect="duration,...">` / `<stopwatch id="n">`** — engine-side bracket collectors (`duration` built in; plugins add more via `axn-dev.flowMetrics`). Pure measurement, no verdict.
+- **Emitted** — a step reports its own measurements: any output line `AXN_METRIC {"name":"x","value":1,"unit":"ms","samples":[...],"better":"lower"}` is parsed out of the output (asserts never see it) and recorded. Plugin adapters use `ctx.emitMetric({name, value, ...})` instead. Everything emitted is recorded; bound it with `<assert that="metric" name="x" max="…"/>`.
+
+Reports are the metrics store: `--label <name>` tags a run (`report.label` + `flow-report-<label>-<ts>.json`), then:
+
+```bash
+axn-dev flow compare -f flows/perf.xml before after   # latest report per label, per-metric deltas + improved/regressed
+axn-dev flow history -f flows/perf.xml --metric app.prompt_ms   # every recorded value over time
 ```
 
 ### Locating flows/scenarios (`paths:`)

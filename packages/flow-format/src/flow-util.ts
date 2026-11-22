@@ -42,10 +42,12 @@ export interface ParsedAssertion {
   /** that="script": path to a ts/js assertion script (relative to the flow
    *  file); it gets the output under test as $AXN_OUTPUT, exit 0 = pass */
   src?: string;
-  /** that="duration": lower bound in ms */
+  /** that="duration"/"metric": lower bound (ms for duration) */
   min?: number;
-  /** that="duration": upper bound in ms (defaults to numeric `value`) */
+  /** that="duration"/"metric": upper bound (defaults to numeric `value`) */
   max?: number;
+  /** that="metric": name of the recorded metric to bound */
+  name?: string;
 }
 
 export function parseAssertAttrs(attrs: Record<string, any>, text?: string): ParsedAssertion {
@@ -60,6 +62,7 @@ export function parseAssertAttrs(attrs: Record<string, any>, text?: string): Par
     src: attrs.src !== undefined ? String(attrs.src) : undefined,
     min: num(attrs.min),
     max: num(attrs.max),
+    name: attrs.name !== undefined ? String(attrs.name) : undefined,
     selector: attrs.selector !== undefined ? String(attrs.selector) : undefined,
     url: attrs.url !== undefined ? String(attrs.url) : undefined,
     fullPage: attrs.fullPage === true || String(attrs.fullPage) === "true" || undefined,
@@ -194,17 +197,83 @@ export interface ManualStepResult {
   notes?: string;
 }
 
-/** A named measurement recorded by a <metric>/<stopwatch> block — one
- * entry per collected metric per block execution (a block inside <repeat>
- * yields entries per iteration). */
+/** A named measurement recorded by a <metric>/<stopwatch> block or emitted
+ * by a step via an `AXN_METRIC` line — one entry per collected metric per
+ * block/step execution (a block inside <repeat> yields entries per
+ * iteration). */
 export interface MetricRecord {
-  /** <metric id="..."> / <stopwatch id="..."> */
+  /** <metric id="..."> / <stopwatch id="...">, or the emitting step's name */
   id: string;
-  /** Metric name: "duration" (built-in) or a plugin collector name */
+  /** Metric name: "duration" (built-in), a plugin collector name, or the
+   * name declared on an AXN_METRIC line */
   name: string;
   value: number;
-  /** Unit label ("ms", "s", "mb", …) as declared by the collector */
+  /** Unit label ("ms", "s", "mb", …) as declared by the collector/emitter */
   unit?: string;
+  /** Per-run samples behind `value` (emitted metrics) — compare reports
+   *  medians/spread when present */
+  samples?: number[];
+  /** Direction hint for comparisons: is a smaller or larger value better? */
+  better?: "lower" | "higher" | "none";
+  /** Free-form description (emitted metrics) */
+  description?: string;
+}
+
+/** Line prefix marking an emitted metric in step output. The rest of the
+ * line is a JSON object: AXN_METRIC {"name":"x","value":1,"unit":"ms",…}.
+ * Works for every adapter kind — plugin adapters also have ctx.emitMetric. */
+export const AXN_METRIC_PREFIX = "AXN_METRIC";
+
+/** A metric an adapter/step emits, before the engine wraps it in a
+ * MetricRecord. */
+export interface EmittedMetric {
+  name: string;
+  value: number;
+  unit?: string;
+  samples?: number[];
+  better?: "lower" | "higher" | "none";
+  description?: string;
+}
+
+/** Parse one output line; returns the metric when the line is a valid
+ * `AXN_METRIC {json}` line, else null. */
+export function parseMetricLine(line: string): EmittedMetric | null {
+  const t = line.trim();
+  if (!t.startsWith(AXN_METRIC_PREFIX)) return null;
+  const rest = t.slice(AXN_METRIC_PREFIX.length).trim();
+  if (!rest.startsWith("{")) return null;
+  try {
+    const m = JSON.parse(rest) as Record<string, unknown>;
+    if (typeof m.name !== "string" || !m.name) return null;
+    const value = typeof m.value === "number" ? m.value : Number(m.value);
+    if (!isFinite(value)) return null;
+    const out: EmittedMetric = { name: m.name, value };
+    if (typeof m.unit === "string") out.unit = m.unit;
+    if (Array.isArray(m.samples) && m.samples.every((s) => typeof s === "number" && isFinite(s))) {
+      out.samples = m.samples as number[];
+    }
+    if (m.better === "lower" || m.better === "higher" || m.better === "none") out.better = m.better;
+    if (typeof m.description === "string") out.description = m.description;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/** Lift all `AXN_METRIC` lines out of step output. Returns the output with
+ * the lines removed (assertions/`contains` never see them) plus the parsed
+ * metrics, deduped by name — the last line for a name wins (steps emitting
+ * per iteration carry their series in `samples`). */
+export function extractEmittedMetrics(output: string): { output: string; metrics: EmittedMetric[] } {
+  if (!output.includes(AXN_METRIC_PREFIX)) return { output, metrics: [] };
+  const kept: string[] = [];
+  const byName = new Map<string, EmittedMetric>();
+  for (const line of output.split("\n")) {
+    const m = parseMetricLine(line);
+    if (m) byName.set(m.name, m);
+    else kept.push(line);
+  }
+  return { output: kept.join("\n"), metrics: [...byName.values()] };
 }
 
 /** A captured evidence artifact (screenshot or video segment). */
@@ -249,6 +318,8 @@ export interface FlowReport {
   timestamp: string;
   /** Wall-clock duration of the whole run (incl. scenario startup). */
   durationMs?: number;
+  /** --label run tag — lets `flow compare`/`history` address stored runs. */
+  label?: string;
   /** Git context of the repo the flows live in — omitted outside a work tree. */
   git?: GitInfo;
   flows: FlowResult[];
@@ -1447,7 +1518,11 @@ export function isFlowFileAllowed(file: string, roots: string[], dirNames?: stri
 }
 
 /** Write a FlowReport to the .reports directory next to the flow file (flows/.reports). */
-export function writeFlowReport(filePath: string, results: FlowResult[], opts?: { durationMs?: number }): string {
+export function writeFlowReport(
+  filePath: string,
+  results: FlowResult[],
+  opts?: { durationMs?: number; label?: string },
+): string {
   const reportsDir = join(dirname(filePath), ".reports");
   if (!existsSync(reportsDir)) {
     mkdirSync(reportsDir, { recursive: true });
@@ -1455,13 +1530,15 @@ export function writeFlowReport(filePath: string, results: FlowResult[], opts?: 
   }
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const git = gitInfoFor(dirname(filePath));
+  const label = opts?.label?.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-|-$/g, "");
   const report: FlowReport = {
     timestamp,
     ...(opts?.durationMs !== undefined ? { durationMs: opts.durationMs } : {}),
+    ...(label ? { label } : {}),
     ...(git ? { git } : {}),
     flows: results,
   };
-  const fileName = `flow-report-${timestamp}.json`;
+  const fileName = `flow-report-${label ? `${label}-` : ""}${timestamp}.json`;
   const reportPath = join(reportsDir, fileName);
   writeFileSync(reportPath, JSON.stringify(report, null, 2));
   return reportPath;

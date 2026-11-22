@@ -18,7 +18,7 @@ export {
 /** Assertion types implemented by the axn and pw runners. `repeat` is
  * engine-generated for reports — it is not valid in XML. */
 export const KNOWN_ASSERTION_TYPES: ReadonlySet<string> = new Set([
-  "contains", "num_responses", "exitCode", "screenshot", "llm", "duration", "script",
+  "contains", "num_responses", "exitCode", "screenshot", "llm", "duration", "script", "metric",
 ]);
 
 function checkAssertion(a: ParsedAssertion, where: string): void {
@@ -63,6 +63,20 @@ function checkAssertion(a: ParsedAssertion, where: string): void {
       }
       if (a.min === undefined && a.max === undefined && (a.value.trim() === "" || isNaN(Number(a.value)))) {
         throw new Error(`${where}: that="duration" needs a bound — set min=, max= or a numeric 'value'`);
+      }
+      break;
+    case "metric":
+      if (!a.name?.trim()) {
+        throw new Error(`${where}: that="metric" requires 'name' — the recorded metric to bound`);
+      }
+      if (a.min !== undefined && isNaN(a.min)) {
+        throw new Error(`${where}: that="metric" min= must be numeric`);
+      }
+      if (a.max !== undefined && isNaN(a.max)) {
+        throw new Error(`${where}: that="metric" max= must be numeric`);
+      }
+      if (a.min === undefined && a.max === undefined && (a.value.trim() === "" || isNaN(Number(a.value)))) {
+        throw new Error(`${where}: that="metric" needs a bound — set min=, max= or a numeric 'value'`);
       }
       break;
     case "script":
