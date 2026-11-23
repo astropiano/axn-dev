@@ -808,7 +808,11 @@ Examples:
           }
           if (u.type === "message") {
             const t0 = Date.now();
-            const r = await this.runMessageStep(flow, u, model, activeScenario, startedScenarios, null, undefined, undefined, autoPort, portFlag, deployUrl);
+            const r = this.absorbEmittedMetrics(
+              await this.runMessageStep(flow, u, model, activeScenario, startedScenarios, null, undefined, undefined, autoPort, portFlag, deployUrl, flowResult),
+              flowResult,
+              u.name ?? u.description ?? "usermessage",
+            );
             responseText += (responseText ? "\n" : "") + r;
             await this.evalStepAsserts(u, r, sc, assertCtx, 0, Date.now() - t0);
           } else if (u.type === "assertions") {
@@ -1468,7 +1472,7 @@ Examples:
             }
             const t0 = Date.now();
             const response = this.absorbEmittedMetrics(
-              await this.runMessageStep(flow, unit, model, scenario, startedScenarios, infra, baseUrl, env, autoPort, portFlag, deploymentUrl),
+              await this.runMessageStep(flow, unit, model, scenario, startedScenarios, infra, baseUrl, env, autoPort, portFlag, deploymentUrl, flowResult),
               flowResult,
               unit.name ?? unit.description ?? "usermessage",
             );
@@ -1556,7 +1560,7 @@ Examples:
             }
             const t0 = Date.now();
             const response = this.absorbEmittedMetrics(
-              await this.runMessageStep(flow, unit, model, scenario, startedScenarios, infra, baseUrl, env, autoPort, portFlag, deploymentUrl),
+              await this.runMessageStep(flow, unit, model, scenario, startedScenarios, infra, baseUrl, env, autoPort, portFlag, deploymentUrl, flowResult),
               flowResult,
               unit.name ?? unit.description ?? "usermessage",
             );
@@ -1972,7 +1976,8 @@ Examples:
     env?: Record<string, string>,
     autoPort = false,
     portFlag: number | null = null,
-    deployUrl: string | null = null
+    deployUrl: string | null = null,
+    result?: FlowResult,
   ): Promise<string> {
     const adapterName = step.adapter ?? scenario.adapter;
     const spec = adapterName
@@ -2021,7 +2026,7 @@ Examples:
     const adapter = await flowAdapter(adapterName);
     const out = await adapter.run(
       step as FlowAdapterStep,
-      this.makeAdapterCtx(flow, step, stepEnv, { scenario, model, baseUrl }),
+      this.makeAdapterCtx(flow, step, stepEnv, { scenario, model, baseUrl, result }),
     );
     return typeof out === "string" ? out : "";
   }
