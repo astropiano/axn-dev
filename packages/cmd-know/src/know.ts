@@ -664,6 +664,6 @@ Examples:
   }
 
   private isTextFile(name: string): boolean {
-    return /\.(md|txt|ts|js|py|java|yaml|yml|json|sh|adoc|rst|toml|env|conf|cfg)$/.test(name);
+    return /\.(md|txt|ts|tsx|js|jsx|py|java|cs|yaml|yml|json|sh|adoc|asciidoc|rst|toml|env|conf|cfg)$/.test(name);
   }
 }

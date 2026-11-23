@@ -75,6 +75,25 @@ describe("know add", () => {
     expect(after).toBe(before);
   });
 
+  it("tracks .tsx/.jsx/.cs/.asciidoc — every extractor-backed extension", async () => {
+    const src = join(TMP, "ui");
+    mkdirSync(src, { recursive: true });
+    for (const [name, body] of [
+      ["Widget.tsx", "export function Widget() { return <div/>; }\n"],
+      ["widget.jsx", "export function widget() { return 1; }\n"],
+      ["Widget.cs", "class Widget {}\n"],
+      ["notes.asciidoc", "= Notes\n\ntext\n"],
+    ]) {
+      writeFileSync(join(src, name), body);
+    }
+    await run("add", src);
+    const itemsDir = join(AXN_ROOT, "corpora", "personal", "items");
+    const files = readdirSync(itemsDir);
+    for (const name of ["Widget.tsx", "widget.jsx", "Widget.cs", "notes.asciidoc"]) {
+      expect(files.some((f) => f.includes(name))).toBe(true);
+    }
+  });
+
   it("throws for non-existent path", async () => {
     await expect(run("add", join(DOCS, "missing.md"))).rejects.toThrow("does not exist");
   });
