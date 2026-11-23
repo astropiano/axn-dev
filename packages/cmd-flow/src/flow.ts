@@ -1,5 +1,5 @@
 import type { Command } from "@axn-dev/core";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
@@ -25,7 +25,7 @@ import {
   type FlowMetricCollector,
   type FlowMetricContext,
 } from "@axn-dev/core";
-import { loadFlowsFromFile, discoverAllFlows, writeFlowReport, evidenceDirFor, normalizeRunnerName, toJUnitXml, gitInfoFor, type FlowInfo } from "@axn-dev/flow-format";
+import { loadFlowsFromFile, discoverAllFlows, writeFlowReport, evidenceDirFor, normalizeRunnerName, toJUnitXml, gitInfoFor, extractEmittedMetrics, type FlowInfo, type MetricRecord } from "@axn-dev/flow-format";
 import type {
   ParsedFlow,
   ParsedScenario,
@@ -34,6 +34,7 @@ import type {
   ParsedReadiness,
   ParsedStep,
   FlowResult,
+  FlowReport,
   AssertionResult,
   EvidenceArtifact,
 } from "@axn-dev/flow-format";
@@ -69,7 +70,8 @@ const FLOW_FLAGS = [
   "--no-stop", "--no-build", "--clean-start", "--manual", "--adapter",
   "--report", "--report-format", "--quiet", "-q", "--fail-on-unavailable-metric",
   "--infra", "-i", "--base-url", "--global", "-g", "--workbase", "--auto-port",
-  "--port", "--pwd", "-c", "--yes", "-y", "-B", "--runner", "--help", "-h",
+  "--port", "--pwd", "-c", "--yes", "-y", "-B", "--runner", "--label",
+  "--metric", "--help", "-h",
 ];
 
 export class FlowCommand implements Command {
@@ -98,6 +100,9 @@ export class FlowCommand implements Command {
    * <metric> collector is missing or reports null. */
   private failOnUnavailableMetric = false;
   private reportPath: string | null = null;
+  /** --label: tag stored on the report so `flow compare`/`history` can
+   *  address this run later. */
+  private reportLabel: string | null = null;
 
   help(): string {
     return `
@@ -108,6 +113,10 @@ Run XML flow tests against Docker Compose scenarios.
 Subcommands:
   list                    List all discovered flows (global + project repos)
   list-adapters           List registered flow adapters (plugin-contributed)
+  compare -f <file> A B   Compare the latest reports labeled A and B —
+                          aligns recorded metrics by name, shows delta
+  history -f <file>       List every recorded metric across stored reports
+                          [--metric <name>] [-t <flow>] [--label <l>]
 
 Options:
   -f, --file <path>       Path to the XML flow file (required)
@@ -132,6 +141,9 @@ Options:
                           scenario command fails.
   --report <path>         Additionally write the run report to <path>
                           (the default flows/.reports/*.json is always kept)
+  --label <name>          Tag this run's report (report.label + filename):
+                          'flow compare -f <file> A B' and 'flow history'
+                          address stored runs by label
   --report-format <fmt>   Format for --report: json (default) or junit
                           (JUnit XML for CI test reports, e.g. GitLab)
   --fail-on-unavailable-metric
@@ -179,7 +191,7 @@ Adapters decide how steps run:
                           then adapters/<name>.ts|.js next to the flow file.
 
 Assertions:
-  <assert that="contains|num_responses|exitCode|screenshot|llm|duration|script" .../>
+  <assert that="contains|num_responses|exitCode|screenshot|llm|duration|script|metric" .../>
   Placement:
     - bare <assert/> between steps — evaluates the output accumulated so far;
       add fresh="true" to see only output produced since the previous assert
@@ -202,6 +214,9 @@ Assertions:
   that="script"             A ts/js assertion script (src= or value=) run via
                           tsx; gets the output under test as $AXN_OUTPUT and
                           the assert as $AXN_ASSERT; exit 0 = pass.
+  that="metric"             Bound a recorded metric: name= required, min=/max=
+                          bounds (numeric 'value' is shorthand max). Checks
+                          the latest record — emitted or collected.
   that="llm"                (see above)
 
 Flakiness / non-determinism:
@@ -219,6 +234,13 @@ Flakiness / non-determinism:
                           resolve to plugin collectors (axn-dev.flowMetrics).
                           <stopwatch id="n"> is sugar for
                           <metric id="n" collect="duration">.
+  Emitted metrics:          a step can also report its own measurements —
+                          any output line 'AXN_METRIC {"name":"x","value":1,
+                          "unit":"ms","samples":[...],"better":"lower"}' is
+                          lifted out of the output into metrics[] (asserts
+                          never see it; plugin adapters may call
+                          ctx.emitMetric instead). Everything emitted is
+                          recorded — bound it with that="metric".
   <extract selector="..." [attr="text|value|html|<name>"]/> reads a DOM
                           element's content into the output stream — e.g. the
                           last message of an interactive HTML chat — so
@@ -256,6 +278,11 @@ Examples:
 
     if (args[0] === "list-adapters") {
       this.listAdapters();
+      return;
+    }
+
+    if (args[0] === "compare" || args[0] === "history") {
+      this.metricReportCommand(args[0], args.slice(1));
       return;
     }
 
@@ -324,6 +351,9 @@ Examples:
         this.quietMode = true;
       } else if (arg === "--fail-on-unavailable-metric") {
         this.failOnUnavailableMetric = true;
+      } else if (arg === "--label") {
+        this.reportLabel = args[++i];
+        if (!this.reportLabel) throw new Error("--label requires a value");
       } else if (arg === "--report") {
         this.reportPath = args[++i];
         if (!this.reportPath) throw new Error("--report requires a path");
@@ -486,7 +516,10 @@ Examples:
 
     const durationMs = Date.now() - runStartedAt;
     if (this._resolvedFilePath) {
-      writeFlowReport(this._resolvedFilePath, results, { durationMs });
+      writeFlowReport(this._resolvedFilePath, results, {
+        durationMs,
+        label: this.reportLabel ?? undefined,
+      });
     }
     this.writeExtraReport(results, durationMs);
     this.printSummary(results);
@@ -494,6 +527,110 @@ Examples:
     if (results.some((r) => !r.passed)) {
       throw new Error("One or more flow assertions failed");
     }
+  }
+
+  /**
+   * `flow compare -f <file> <labelA> <labelB> [-t flow]` and
+   * `flow history -f <file> [--metric n] [-t flow] [--label l]` —
+   * query the stored .reports/*.json of a flow file. Reports are the
+   * metrics store: compare aligns two labeled runs' metrics by name,
+   * history lists every recorded metric over time.
+   */
+  private metricReportCommand(cmd: "compare" | "history", args: string[]): void {
+    let file: string | null = null;
+    let flowFilter: string | null = null;
+    let metricFilter: string | null = null;
+    let labelFilter: string | null = null;
+    const positional: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "-f" || a === "--file") file = args[++i];
+      else if (a === "-t" || a === "--filter") flowFilter = args[++i];
+      else if (a === "--metric") metricFilter = args[++i];
+      else if (a === "--label") labelFilter = args[++i];
+      else if (!a.startsWith("-")) positional.push(a);
+    }
+    if (!file) throw new Error(`${cmd} needs -f <flow-file>`);
+    const reportsDir = join(dirname(resolve(process.cwd(), file)), ".reports");
+    if (!existsSync(reportsDir)) throw new Error(`No reports found for ${file} (${reportsDir} does not exist)`);
+
+    const reports = readdirSync(reportsDir)
+      .filter((n) => n.startsWith("flow-report-") && n.endsWith(".json"))
+      .map((n) => {
+        try {
+          return JSON.parse(readFileSync(join(reportsDir, n), "utf-8")) as FlowReport;
+        } catch {
+          return null;
+        }
+      })
+      .filter((r): r is FlowReport => !!r)
+      .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    if (reports.length === 0) throw new Error(`No reports found in ${reportsDir}`);
+
+    /** Latest metric record per name within one flow result. */
+    const metricsOf = (r: FlowReport, flowName?: string) => {
+      const out = new Map<string, { metric: MetricRecord; flow: string }>();
+      for (const f of r.flows ?? []) {
+        if (flowName && f.flow !== flowName) continue;
+        if (flowFilter && !f.flow.includes(flowFilter)) continue;
+        for (const m of f.metrics ?? []) out.set(`${f.flow}::${m.name}`, { metric: m, flow: f.flow });
+      }
+      return out;
+    };
+
+    if (cmd === "compare") {
+      const [labelA, labelB] = positional;
+      if (!labelA || !labelB) throw new Error("compare needs two labels: flow compare -f <file> <A> <B>");
+      const find = (l: string) => [...reports].reverse().find((r) => r.label === l);
+      const repA = find(labelA);
+      const repB = find(labelB);
+      if (!repA) throw new Error(`No report labeled '${labelA}' — run with --label ${labelA}`);
+      if (!repB) throw new Error(`No report labeled '${labelB}' — run with --label ${labelB}`);
+      const mA = metricsOf(repA);
+      const mB = metricsOf(repB);
+      console.log(`\nComparing '${labelA}' (${repA.timestamp}) → '${labelB}' (${repB.timestamp})\n`);
+      const keys = [...new Set([...mA.keys(), ...mB.keys()])].sort();
+      for (const k of keys) {
+        const a = mA.get(k)?.metric;
+        const b = mB.get(k)?.metric;
+        const flow = mA.get(k)?.flow ?? mB.get(k)?.flow ?? "";
+        if (!a || !b) {
+          console.log(`  ${k.split("::")[1]}  [${flow}]  ${a ? a.value : "—"} → ${b ? b.value : "—"}  (only in ${a ? labelA : labelB})`);
+          continue;
+        }
+        const delta = b.value - a.value;
+        const pct = a.value !== 0 ? (delta / a.value) * 100 : 0;
+        const unit = a.unit ?? b.unit ?? "";
+        const better = b.better ?? a.better;
+        let verdict = "";
+        if (better === "lower" || better === "higher") {
+          const improved = better === "lower" ? delta < 0 : delta > 0;
+          if (delta !== 0) verdict = improved ? "  improved" : "  regressed";
+        }
+        console.log(
+          `  ${k.split("::")[1]}  [${flow}]  ${a.value} → ${b.value} ${unit}  ` +
+            `(${delta >= 0 ? "+" : ""}${delta}${unit}, ${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%)${verdict}`,
+        );
+      }
+      console.log("");
+      return;
+    }
+
+    // history
+    console.log(`\nMetric history for ${file}\n`);
+    for (const r of reports) {
+      if (labelFilter && r.label !== labelFilter) continue;
+      const tag = r.label ? ` [${r.label}]` : "";
+      const git = r.git ? ` ${r.git.commit.slice(0, 8)}${r.git.clean ? "" : "*"}` : "";
+      for (const f of r.flows ?? []) {
+        if (flowFilter && !f.flow.includes(flowFilter)) continue;
+        for (const m of f.metrics ?? []) {
+          if (metricFilter && m.name !== metricFilter) continue;
+          console.log(`  ${r.timestamp}${tag}${git}  ${f.flow}  ${m.name} = ${m.value}${m.unit ?? ""}`);
+        }
+      }
+    }
+    console.log("");
   }
 
   private listAdapters(): void {
@@ -654,6 +791,7 @@ Examples:
           flowDir: dirname(this._resolvedFilePath!),
           env: this.expandEnvVars({ ...(process.env as Record<string, string>), ...flow.env }),
           flowName: flow.name,
+          metrics: (flowResult.metrics ??= []),
         };
         let responseText = "";
         const scope: ExecScope = { stopped: false, sink: flowResult.assertions, stdoutBase: 0 };
@@ -670,7 +808,11 @@ Examples:
           }
           if (u.type === "message") {
             const t0 = Date.now();
-            const r = await this.runMessageStep(flow, u, model, activeScenario, startedScenarios, null, undefined, undefined, autoPort, portFlag, deployUrl);
+            const r = this.absorbEmittedMetrics(
+              await this.runMessageStep(flow, u, model, activeScenario, startedScenarios, null, undefined, undefined, autoPort, portFlag, deployUrl, flowResult),
+              flowResult,
+              u.name ?? u.description ?? "usermessage",
+            );
             responseText += (responseText ? "\n" : "") + r;
             await this.evalStepAsserts(u, r, sc, assertCtx, 0, Date.now() - t0);
           } else if (u.type === "assertions") {
@@ -829,13 +971,30 @@ Examples:
     }
   }
 
+  /**
+   * Lift `AXN_METRIC {json}` lines out of step output: each becomes a
+   * MetricRecord in result.metrics (deduped by name within the chunk —
+   * last wins; a step emitting per iteration carries its series in
+   * `samples`) and is removed from the output so `contains` and friends
+   * never see it. Every emitted metric is recorded — asserts give it a
+   * verdict, the report keeps them all.
+   */
+  private absorbEmittedMetrics(output: string, result: FlowResult, id: string): string {
+    const { output: clean, metrics } = extractEmittedMetrics(output);
+    for (const m of metrics) {
+      (result.metrics ??= []).push({ id, ...m });
+      this.progress(`    metric '${m.name}': ${m.value}${m.unit ?? ""} (emitted)`);
+    }
+    return clean;
+  }
+
   /** Nested <assert> children of a step — evaluate against that step's own
    * output (and, for duration asserts, its wall-clock time). */
   private async evalStepAsserts(
     step: ParsedStep,
     output: string,
     scope: ExecScope,
-    ctx: { flowDir: string; env: Record<string, string>; flowName?: string },
+    ctx: { flowDir: string; env: Record<string, string>; flowName?: string; metrics?: MetricRecord[] },
     exitCode?: number,
     durationMs?: number,
   ): Promise<void> {
@@ -929,12 +1088,17 @@ Examples:
           (step.type !== "script" && step.type !== "message" && step.type !== "assertions")
         ) {
           const t0 = Date.now();
-          const response = await this.runCustomAdapterStep(flow, step, env);
+          const response = this.absorbEmittedMetrics(
+            await this.runCustomAdapterStep(flow, step, env, flowResult),
+            flowResult,
+            step.name ?? step.description ?? "step",
+          );
           allStdout += (allStdout ? "\n" : "") + response;
           const assertCtx = {
             flowDir: dirname(this._resolvedFilePath!),
             env,
             flowName: flow.name,
+            metrics: (flowResult.metrics ??= []),
           };
           await this.evalStepAsserts(step, response, scope, assertCtx, 0, Date.now() - t0);
         } else if (step.type === "assertions") {
@@ -942,6 +1106,7 @@ Examples:
             flowDir: dirname(this._resolvedFilePath!),
             env,
             flowName: flow.name,
+            metrics: (flowResult.metrics ??= []),
           };
           for (const a of step.assertions ?? []) {
             const base = a.fresh ? (scope.cursor ?? scope.stdoutBase) : scope.stdoutBase;
@@ -1114,7 +1279,7 @@ Examples:
       let lastExitCode = 0;
       const outerScope: ExecScope = { stopped: false, sink: flowResult.assertions, stdoutBase: 0 };
 
-      const assertCtx = { flowDir, env, flowName: flow.name };
+      const assertCtx = { flowDir, env, flowName: flow.name, metrics: (flowResult.metrics ??= []) };
 
       const evalBlock = async (assertions: ParsedAssertion[], scope: ExecScope) => {
         for (const a of assertions) {
@@ -1198,7 +1363,8 @@ Examples:
           if (batch.length === 0) return;
           const { stdout, stderr, exitCode, videos } = await proc.run(batch);
           batch = [];
-          allStdout += (allStdout ? "\n" : "") + stdout;
+          allStdout += (allStdout ? "\n" : "") +
+            this.absorbEmittedMetrics(stdout, flowResult, "step");
           lastStderr = stderr;
           lastExitCode = exitCode;
           for (const v of videos ?? []) {
@@ -1305,13 +1471,21 @@ Examples:
               throw new Error(`Flow '${flow.name}' has a message step but no <model> in <setup>`);
             }
             const t0 = Date.now();
-            const response = await this.runMessageStep(flow, unit, model, scenario, startedScenarios, infra, baseUrl, env, autoPort, portFlag, deploymentUrl);
+            const response = this.absorbEmittedMetrics(
+              await this.runMessageStep(flow, unit, model, scenario, startedScenarios, infra, baseUrl, env, autoPort, portFlag, deploymentUrl, flowResult),
+              flowResult,
+              unit.name ?? unit.description ?? "usermessage",
+            );
             allStdout += (allStdout ? "\n" : "") + response;
             await this.evalStepAsserts(unit, response, scope, assertCtx, 0, Date.now() - t0);
           } else {
             await flush();
             const t0 = Date.now();
-            const stdout = await this.runCustomAdapterStep(flow, unit, env);
+            const stdout = this.absorbEmittedMetrics(
+              await this.runCustomAdapterStep(flow, unit, env, flowResult),
+              flowResult,
+              unit.name ?? unit.description ?? "step",
+            );
             allStdout += (allStdout ? "\n" : "") + stdout;
             lastStderr = "";
             lastExitCode = 0;
@@ -1339,7 +1513,8 @@ Examples:
         const processSeq = async (unit: ParsedStep, scope: ExecScope): Promise<void> => {
           if (unit.type === "script" && (!unit.adapter || unit.adapter === "tsAdapter")) {
             const t0 = Date.now();
-            const { stdout, stderr, exitCode } = await this.runTsScript(stepPathFor(unit), env, flowDir);
+            const { stdout: rawOut, stderr, exitCode } = await this.runTsScript(stepPathFor(unit), env, flowDir);
+            const stdout = this.absorbEmittedMetrics(rawOut, flowResult, unit.name ?? unit.description ?? "script");
             allStdout += (allStdout ? "\n" : "") + stdout;
             lastStderr = stderr;
             lastExitCode = exitCode;
@@ -1384,12 +1559,20 @@ Examples:
               throw new Error(`Flow '${flow.name}' has a message step but no <model> in <setup>`);
             }
             const t0 = Date.now();
-            const response = await this.runMessageStep(flow, unit, model, scenario, startedScenarios, infra, baseUrl, env, autoPort, portFlag, deploymentUrl);
+            const response = this.absorbEmittedMetrics(
+              await this.runMessageStep(flow, unit, model, scenario, startedScenarios, infra, baseUrl, env, autoPort, portFlag, deploymentUrl, flowResult),
+              flowResult,
+              unit.name ?? unit.description ?? "usermessage",
+            );
             allStdout += (allStdout ? "\n" : "") + response;
             await this.evalStepAsserts(unit, response, scope, assertCtx, 0, Date.now() - t0);
           } else {
             const t0 = Date.now();
-            const stdout = await this.runCustomAdapterStep(flow, unit, env);
+            const stdout = this.absorbEmittedMetrics(
+              await this.runCustomAdapterStep(flow, unit, env, flowResult),
+              flowResult,
+              unit.name ?? unit.description ?? "step",
+            );
             allStdout += (allStdout ? "\n" : "") + stdout;
             lastStderr = "";
             lastExitCode = 0;
@@ -1628,9 +1811,11 @@ Examples:
       scenario?: ParsedScenario;
       model?: ParsedModel;
       baseUrl?: string;
+      result?: FlowResult;
     },
   ): FlowAdapterContext {
     const flowDir = this._resolvedFilePath ? dirname(this._resolvedFilePath) : process.cwd();
+    const result = extra?.result;
     return {
       env,
       flowDir,
@@ -1642,6 +1827,12 @@ Examples:
       baseUrl: extra?.baseUrl,
       runScript: (path, scriptEnv, cwd) =>
         this.runTsScript(path, scriptEnv ?? env, cwd ?? flowDir),
+      emitMetric: (m) => {
+        if (result) {
+          (result.metrics ??= []).push({ id: step.name ?? step.description ?? "step", ...m });
+        }
+        this.progress(`    metric '${m.name}': ${m.value}${m.unit ?? ""} (emitted)`);
+      },
       log: (message) => this.progress(`    ${message}`),
     };
   }
@@ -1650,6 +1841,7 @@ Examples:
     flow: ParsedFlow | null,
     step: ParsedStep,
     env: Record<string, string>,
+    result?: FlowResult,
   ): Promise<string> {
     const name = this.adapterForStep(step);
     if (!name) {
@@ -1669,7 +1861,7 @@ Examples:
       const adapter = await flowAdapter(name);
       const out = await adapter.run(
         expandedStep as FlowAdapterStep,
-        this.makeAdapterCtx(flow, expandedStep, env)
+        this.makeAdapterCtx(flow, expandedStep, env, { result })
       );
       return typeof out === "string" ? out : "";
     }
@@ -1784,7 +1976,8 @@ Examples:
     env?: Record<string, string>,
     autoPort = false,
     portFlag: number | null = null,
-    deployUrl: string | null = null
+    deployUrl: string | null = null,
+    result?: FlowResult,
   ): Promise<string> {
     const adapterName = step.adapter ?? scenario.adapter;
     const spec = adapterName
@@ -1833,7 +2026,7 @@ Examples:
     const adapter = await flowAdapter(adapterName);
     const out = await adapter.run(
       step as FlowAdapterStep,
-      this.makeAdapterCtx(flow, step, stepEnv, { scenario, model, baseUrl }),
+      this.makeAdapterCtx(flow, step, stepEnv, { scenario, model, baseUrl, result }),
     );
     return typeof out === "string" ? out : "";
   }
@@ -2018,7 +2211,7 @@ Examples:
     assertion: ParsedAssertion,
     response: string,
     exitCode?: number,
-    ctx?: { flowDir: string; env: Record<string, string>; flowName?: string },
+    ctx?: { flowDir: string; env: Record<string, string>; flowName?: string; metrics?: MetricRecord[] },
     durationMs?: number
   ): Promise<AssertionResult> {
     const result: AssertionResult = { that: assertion.that, value: assertion.value, passed: false };
@@ -2055,6 +2248,26 @@ Examples:
         result.passed =
           (min === undefined || durationMs >= min) &&
           (max === undefined || durationMs <= max);
+      }
+      return result;
+    }
+
+    if (assertion.that === "metric") {
+      // Bound the latest recorded metric of this name — emitted (AXN_METRIC
+      // line / ctx.emitMetric) or collected (<metric> block). Step-level
+      // asserts run right after the step emitted, so the last record is
+      // that step's; block asserts see the flow's latest record.
+      const rec = ctx?.metrics?.filter((m) => m.name === assertion.name).pop();
+      const max = assertion.max ?? (assertion.value.trim() !== "" && !isNaN(Number(assertion.value)) ? Number(assertion.value) : undefined);
+      const min = assertion.min;
+      if (!rec) {
+        result.passed = false;
+        result.actual = `metric '${assertion.name}' not recorded`;
+      } else {
+        result.actual = `${rec.value}${rec.unit ?? ""}`;
+        result.passed =
+          (min === undefined || rec.value >= min) &&
+          (max === undefined || rec.value <= max);
       }
       return result;
     }

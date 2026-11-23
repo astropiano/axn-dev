@@ -20,6 +20,7 @@ function ctx() {
     flowName: "test",
     flow: { name: "test" },
     runScript: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    emitMetric: () => {},
     log: () => {},
   };
 }

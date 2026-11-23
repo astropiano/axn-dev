@@ -81,7 +81,24 @@ export interface FlowAdapterContext {
     env?: Record<string, string>,
     cwd?: string,
   ): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  /** Record a structured metric into the flow report's metrics[] — the
+   * typed in-process equivalent of printing an `AXN_METRIC {json}` line
+   * (what subprocess adapters must use instead). */
+  emitMetric(metric: FlowEmittedMetric): void;
   log(message: string): void;
+}
+
+/** A metric emitted by an adapter — becomes a MetricRecord in the report. */
+export interface FlowEmittedMetric {
+  name: string;
+  value: number;
+  /** Unit label ("ms", "s", "mb", …) — informational only. */
+  unit?: string;
+  /** Per-run samples behind `value` — compare shows medians/spread. */
+  samples?: number[];
+  /** Is a smaller or larger value better? (compare verdicts) */
+  better?: "lower" | "higher" | "none";
+  description?: string;
 }
 
 export interface FlowAdapter {

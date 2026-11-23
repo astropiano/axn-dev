@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
-import { loadFlowsFromFile, parseFlow, isEvidencePathAllowed, evidenceDirFor } from "./flow-util.js";
+import { loadFlowsFromFile, parseFlow, isEvidencePathAllowed, evidenceDirFor, parseMetricLine, extractEmittedMetrics } from "./flow-util.js";
 
 const TMP = join(tmpdir(), "axn-flow-parse-test-" + process.pid);
 
@@ -479,5 +479,47 @@ describe("loadFlowsFromFile — deployment targets", () => {
       url: "https://staging.example.com/",
     });
     expect(flow.scenarios[1].url).toBeUndefined();
+  });
+});
+
+describe("emitted metrics — AXN_METRIC lines", () => {
+  it("parses a full metric line", () => {
+    const m = parseMetricLine('AXN_METRIC {"name":"app.ms","value":1230,"unit":"ms","samples":[1,2],"better":"lower","description":"d"}');
+    expect(m).toEqual({
+      name: "app.ms", value: 1230, unit: "ms",
+      samples: [1, 2], better: "lower", description: "d",
+    });
+  });
+
+  it("accepts bare name+value and numeric strings", () => {
+    expect(parseMetricLine('AXN_METRIC {"name":"n","value":"42"}')).toEqual({ name: "n", value: 42 });
+  });
+
+  it("rejects non-metric lines and malformed payloads", () => {
+    expect(parseMetricLine("plain output")).toBeNull();
+    expect(parseMetricLine("AXN_METRIC not-json")).toBeNull();
+    expect(parseMetricLine('AXN_METRIC {"value":1}')).toBeNull(); // no name
+    expect(parseMetricLine('AXN_METRIC {"name":"n"}')).toBeNull(); // no value
+    expect(parseMetricLine('AXN_METRIC {"name":"n","value":"abc"}')).toBeNull();
+  });
+
+  it("extract strips metric lines and dedupes by name (last wins)", () => {
+    const out = [
+      "app started",
+      'AXN_METRIC {"name":"a","value":1}',
+      'AXN_METRIC {"name":"b","value":2,"unit":"mb"}',
+      'AXN_METRIC {"name":"a","value":9}',
+      "done",
+    ].join("\n");
+    const r = extractEmittedMetrics(out);
+    expect(r.output).toBe("app started\ndone");
+    expect(r.metrics).toEqual([
+      { name: "a", value: 9 },
+      { name: "b", value: 2, unit: "mb" },
+    ]);
+  });
+
+  it("passes output without metric lines through untouched", () => {
+    expect(extractEmittedMetrics("a\nb")).toEqual({ output: "a\nb", metrics: [] });
   });
 });

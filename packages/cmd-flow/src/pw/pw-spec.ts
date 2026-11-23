@@ -24,6 +24,7 @@ import {
 } from "@axn-dev/core";
 import { evaluateScreenshotAssertion } from "../screenshot.js";
 import { evaluateLlmAssertion } from "../llm-judge.js";
+import { extractEmittedMetrics, type MetricRecord } from "@axn-dev/flow-format";
 
 interface PwAssertion {
   that: string;
@@ -35,6 +36,7 @@ interface PwAssertion {
   src?: string;
   min?: number;
   max?: number;
+  name?: string;
 }
 
 interface PwUnit {
@@ -108,7 +110,7 @@ test(payload.name, async ({ page }, testInfo) => {
   test.setTimeout(600_000);
   const outputs: string[] = [];
   const evidence: { kind: string; name: string; path: string; stepIndex?: number }[] = [];
-  const metrics: { id: string; name: string; value: number; unit?: string }[] = [];
+  const metrics: MetricRecord[] = [];
   const steps: StepOutcome[] = [];
   let lastExit = 0;
   let evidenceCounter = 0;
@@ -124,6 +126,7 @@ test(payload.name, async ({ page }, testInfo) => {
     model: payload.model,
     baseUrl: payload.baseUrl,
     runScript: (path, scriptEnv, cwd) => runTsScript(path, scriptEnv ?? payload.env, cwd ?? payload.flowDir),
+    emitMetric: (m) => metrics.push({ id: unit.name ?? "step", ...m }),
     log: (m) => console.log(`    ${m}`),
   });
 
@@ -194,6 +197,18 @@ test(payload.name, async ({ page }, testInfo) => {
       expect(r.passed, r.actual ?? "llm judge failed").toBe(true);
       return;
     }
+    if (a.that === "metric") {
+      const rec = [...metrics].reverse().find((m) => m.name === a.name);
+      const max = a.max ?? (a.value?.trim() !== "" && !isNaN(Number(a.value)) ? Number(a.value) : undefined);
+      const min = a.min;
+      const ok = !!rec &&
+        (min === undefined || rec.value >= min) &&
+        (max === undefined || rec.value <= max);
+      const actual = rec ? `${rec.value}${rec.unit ?? ""}` : `metric '${a.name}' not recorded`;
+      steps.push({ description: a.description, that: a.that, value: a.value, passed: ok, actual });
+      expect(ok, actual).toBe(true);
+      return;
+    }
     if (a.that === "script") {
       const r = await runTsScript(resolve(payload.flowDir, a.src ?? a.value), {
         ...payload.env, AXN_OUTPUT: input, AXN_ASSERT: JSON.stringify(a),
@@ -232,14 +247,19 @@ test(payload.name, async ({ page }, testInfo) => {
         case "script": {
           if (u.adapter && u.adapter !== "tsAdapter") {
             if (hasFlowAdapter(u.adapter)) {
-              const out = await (await flowAdapter(u.adapter)).run(u, adapterCtx(u));
-              if (out) { outputs.push(String(out)); produced = String(out); }
+              const raw = await (await flowAdapter(u.adapter)).run(u, adapterCtx(u));
+              const { output: clean, metrics: emitted } = extractEmittedMetrics(String(raw ?? ""));
+              for (const m of emitted) metrics.push({ id: u.name ?? "step", ...m });
+              if (clean) { outputs.push(clean); produced = clean; }
               break;
             }
             if (u.adapterPath) {
               const r = await runScriptAdapter(u.adapterPath, u);
               lastExit = r.exitCode;
-              if (r.stdout) { outputs.push(r.stdout.trimEnd()); produced = r.stdout.trimEnd(); }
+              const { output: clean, metrics: emitted } = extractEmittedMetrics(r.stdout);
+              for (const m of emitted) metrics.push({ id: u.name ?? "step", ...m });
+              const out = clean.trimEnd();
+              if (out) { outputs.push(out); produced = out; }
               expect(r.exitCode, r.stderr || r.stdout).toBe(0);
               break;
             }
