@@ -109,6 +109,43 @@ export function allRepos(): Array<{ name: string; path: string }> {
   return repos;
 }
 
+/** One configured repo as `axn-dev git repos` reports it. */
+export interface RepoListing {
+  name: string;
+  /** The configured path (may itself be a linked worktree). */
+  path: string;
+  /** `origin` URL, or null when the repo has none. */
+  remote: string | null;
+  /** Every checkout of the repo — main first — as `git worktree list` sees it. */
+  worktrees: Array<{ path: string; branch: string | null; isMain: boolean }>;
+}
+
+/**
+ * Describe repos for machine consumers (e.g. axn-term's repo discovery).
+ * The remote comes from git itself, not `.git/config`, so a configured path
+ * that is a linked worktree (its `.git` is a file) still reports it. Cheap:
+ * two git calls per repo, no network, no status walk.
+ */
+export function describeRepos(repos: Array<{ name: string; path: string }>): RepoListing[] {
+  return repos.map(({ name, path }) => {
+    const remote = git(path, "remote", "get-url", "origin");
+    let worktrees: RepoListing["worktrees"] = [];
+    try {
+      worktrees = getWorktreeInfo(path)
+        .worktrees.map((w) => ({ path: w.path, branch: w.branch, isMain: w.isMain }))
+        .sort((a, b) => Number(b.isMain) - Number(a.isMain));
+    } catch {
+      // not a git repo any more — keep the entry, without checkouts
+    }
+    return {
+      name,
+      path,
+      remote: remote.status === 0 ? remote.stdout.trim() || null : null,
+      worktrees,
+    };
+  });
+}
+
 export function filterByGroup(repos: Array<{ name: string; path: string }>, group: string | null) {
   if (!group) return repos;
   return repos.filter((r) => {
@@ -210,9 +247,9 @@ export class GitCommand implements Command {
   readonly name = "git";
   readonly description = "Multi-repo git operations across configured repos";
 
-  private static readonly ACTIONS = ["status", "push", "pull", "fetch", "worktree"];
+  private static readonly ACTIONS = ["status", "repos", "push", "pull", "fetch", "worktree"];
   private static readonly WORKTREE_SUBS = ["list", "prune", "add", "remove", "cleanup"];
-  private static readonly FLAGS = ["--group", "-g", "--branch", "--dry-run", "--fetch", "--machine-readable", "--unmerged", "--help", "-h"];
+  private static readonly FLAGS = ["--group", "-g", "--branch", "--dry-run", "--fetch", "--machine-readable", "--unmerged", "--json", "--help", "-h"];
 
   complete(words: string[]): string[] {
     const cur = words[words.length - 1] ?? "";
@@ -231,6 +268,7 @@ Usage: axn-dev git <action> [options]
 
 Actions:
   status              Show branch + dirty state for all repos and linked worktrees
+  repos               List configured repos with remote and worktrees (--json for scripts)
   push                Push repos (requires --group or --branch)
   pull                Pull repos (requires --group or --branch)
   fetch               Fetch all repos
@@ -245,6 +283,7 @@ Options:
   --fetch             Fetch before status to show accurate remote state
   --machine-readable  Output status as pipe-delimited rows (no ANSI colours)
   --unmerged          Show only repos whose current branch is not merged into develop
+  --json              (repos) Print the listing as JSON
 
 Examples:
   axn-dev git status
@@ -252,6 +291,7 @@ Examples:
   axn-dev git status --fetch                  # fetch first for accurate remote state
   axn-dev git status --machine-readable       # pipe-delimited rows for scripts
   axn-dev git status --unmerged               # only repos with unmerged changes vs. develop
+  axn-dev git repos --json                    # repos, remotes and worktrees as JSON
   axn-dev git push --group tools               # only if all on same branch
   axn-dev git push --branch feature/my-feature # push across all groups
   axn-dev git pull --group tools
@@ -275,6 +315,7 @@ Examples:
     let fetch = false;
     let machineReadable = false;
     let unmerged = false;
+    let json = false;
 
     for (let i = 0; i < rest.length; i++) {
       if ((rest[i] === "--group" || rest[i] === "-g") && rest[i + 1]) group = rest[++i];
@@ -283,16 +324,36 @@ Examples:
       else if (rest[i] === "--fetch") fetch = true;
       else if (rest[i] === "--machine-readable") machineReadable = true;
       else if (rest[i] === "--unmerged") unmerged = true;
+      else if (rest[i] === "--json") json = true;
     }
 
     switch (action) {
       case "status": return this.status(group, fetch, machineReadable, unmerged);
+      case "repos":  return this.repos(group, json);
       case "push":   return this.pushPull("push", group, branch, dryRun);
       case "pull":   return this.pushPull("pull", group, branch, dryRun);
       case "fetch":  return this.fetch(group, dryRun);
       case "worktree": return this.worktree(rest);
       default:
         throw new Error(`Unknown git action '${action}'. Run 'axn-dev git --help'.`);
+    }
+  }
+
+  private repos(group: string | null, json: boolean): void {
+    const listing = describeRepos(filterByGroup(allRepos(), group));
+    if (json) {
+      console.log(JSON.stringify(listing, null, 2));
+      return;
+    }
+    if (listing.length === 0) {
+      console.log("No repos found in config.");
+      return;
+    }
+    for (const r of listing) {
+      console.log(`${BOLD}${r.name}${RESET}  ${r.path}  ${DIM}${r.remote ?? "(no origin)"}${RESET}`);
+      for (const w of r.worktrees.filter((w) => !w.isMain)) {
+        console.log(`  ${w.branch ?? "(detached)"}  ${DIM}${w.path}${RESET}`);
+      }
     }
   }
 
