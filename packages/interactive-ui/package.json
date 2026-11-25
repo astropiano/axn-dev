@@ -31,5 +31,12 @@
   },
   "devDependencies": {
     "@axn-dev/core": "workspace:*"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astropiano/axn-dev.git",
+    "directory": "packages/interactive-ui"
+  },
+  "homepage": "https://github.com/astropiano/axn-dev/tree/main/packages/interactive-ui#readme",
+  "bugs": "https://github.com/astropiano/axn-dev/issues"
 }

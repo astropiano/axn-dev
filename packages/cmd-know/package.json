@@ -1,7 +1,7 @@
 {
   "name": "@axn-dev/cmd-know",
   "version": "0.1.0",
-  "description": "axn-dev know command \u2014 local BM25/vector knowledge index",
+  "description": "axn-dev know command — local BM25/vector knowledge index",
   "type": "module",
   "exports": {
     ".": {
@@ -73,5 +73,12 @@
   "private": false,
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astropiano/axn-dev.git",
+    "directory": "packages/cmd-know"
+  },
+  "homepage": "https://github.com/astropiano/axn-dev/tree/main/packages/cmd-know#readme",
+  "bugs": "https://github.com/astropiano/axn-dev/issues"
 }

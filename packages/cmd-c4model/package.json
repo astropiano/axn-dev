@@ -51,5 +51,12 @@
   },
   "devDependencies": {
     "@axn-dev/core": "workspace:*"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astropiano/axn-dev.git",
+    "directory": "packages/cmd-c4model"
+  },
+  "homepage": "https://github.com/astropiano/axn-dev/tree/main/packages/cmd-c4model#readme",
+  "bugs": "https://github.com/astropiano/axn-dev/issues"
 }

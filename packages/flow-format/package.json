@@ -1,7 +1,7 @@
 {
   "name": "@axn-dev/flow-format",
   "version": "0.1.0",
-  "description": "axn-dev flow format \u2014 XML flow parser, types, reports, and manual flow runner",
+  "description": "axn-dev flow format — XML flow parser, types, reports, and manual flow runner",
   "type": "module",
   "exports": {
     ".": {
@@ -35,5 +35,12 @@
   "license": "MIT",
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astropiano/axn-dev.git",
+    "directory": "packages/flow-format"
+  },
+  "homepage": "https://github.com/astropiano/axn-dev/tree/main/packages/flow-format#readme",
+  "bugs": "https://github.com/astropiano/axn-dev/issues"
 }
