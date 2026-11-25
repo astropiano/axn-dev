@@ -100,6 +100,14 @@ export class FlowCommand implements Command {
   private _resolvedFilePath: string | null = null;
   /** --interactive: holds the run before each top-level step. */
   private gate: StepGate | null = null;
+  /** Adapter flows: scenario lifecycle for adapters declaring wantsScenario,
+   * prepared once per scenario and reused by every later step. */
+  private adapterScenarioRun: {
+    started: Set<string>;
+    autoPort: boolean;
+    portFlag: number | null;
+    prepared: Map<string, { baseUrl: string; env: Record<string, string> }>;
+  } | null = null;
   private runnerMode: string | null = process.env.AXN_FLOW_RUNNER ?? null;
   private adapterRegistry: AdapterRegistry | null = null;
   private orchestratorProcesses = new Map<string, OrchestratorProcess>();
@@ -758,6 +766,7 @@ Examples:
           .map((s) => this.deploymentUrl(s, flow, deployUrl))
           .find((u): u is string => u !== null) ??
         this.deploymentUrl({ name: flow.name } as ParsedScenario, flow, null);
+      this.adapterScenarioRun = { started: startedScenarios, autoPort, portFlag, prepared: new Map() };
       return [await this.runCustomAdapterFlow(flow, target)];
     }
     if (this.gate) throw new Error("--interactive supports adapter flows only, not script or message flows yet");
@@ -1925,10 +1934,11 @@ Examples:
     // Registered plugin adapters run in-process.
     if (hasFlowAdapter(name)) {
       this.progress(`    Adapter '${name}' resolved via plugin registry`);
+      const { scenario, baseUrl, env: stepEnv } = await this.adapterScenario(flow, name, env);
       const adapter = await flowAdapter(name);
       const out = await adapter.run(
         expandedStep as FlowAdapterStep,
-        this.makeAdapterCtx(flow, expandedStep, env, { result })
+        this.makeAdapterCtx(flow, expandedStep, stepEnv, { result, scenario, baseUrl })
       );
       return typeof out === "string" ? out : "";
     }
@@ -1942,6 +1952,30 @@ Examples:
       throw new Error(`External adapter '${name}' exited with ${exitCode}: ${stderr || stdout}`);
     }
     return stdout;
+  }
+
+  /** For an adapter declaring wantsScenario: the flow's first scenario,
+   * started and ready, with its base URL — the same engine-side lifecycle
+   * message adapters get. Deployment targets keep their own BASE_URL. */
+  private async adapterScenario(
+    flow: ParsedFlow | null,
+    adapterName: string,
+    env: Record<string, string>,
+  ): Promise<{ scenario?: ParsedScenario; baseUrl?: string; env: Record<string, string> }> {
+    const scenario = flow?.scenarios[0];
+    const run = this.adapterScenarioRun;
+    const wants = flowAdapterSpecs().find((s) => s.name === adapterName)?.wantsScenario;
+    if (!flow || !scenario || !run || !wants || this.deploymentUrl(scenario, flow, null)) {
+      return { scenario, env };
+    }
+    let prepared = run.prepared.get(scenario.name);
+    if (!prepared) {
+      const p = await this.prepareScenario(scenario, flow, run.started, run.autoPort, run.portFlag);
+      await this.waitForReadiness(scenario, p.scenarioPath, p.env, p.endpoints);
+      prepared = { baseUrl: p.baseUrl, env: p.env };
+      run.prepared.set(scenario.name, prepared);
+    }
+    return { scenario, baseUrl: prepared.baseUrl, env: { ...env, ...prepared.env } };
   }
 
   private async runExternalAdapter(
