@@ -50,6 +50,36 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("adapter start", () => {
+  it("runs once per flow, before the first step, and pairs with dispose", async () => {
+    const events: string[] = [];
+    registerFlowAdapter({
+      name: "lifecycle-rec",
+      tags: [],
+      load: () => ({
+        start: (ctx) => {
+          events.push(`start:${ctx.baseUrl ?? "-"}`);
+        },
+        run: (step) => {
+          events.push(`run:${step.args?.do}`);
+          return "ok";
+        },
+        dispose: () => {
+          events.push("dispose");
+        },
+      }),
+    });
+    const file = join(TMP, "lifecycle.xml");
+    writeFileSync(
+      file,
+      `<?xml version="1.0"?><flows><flow name="lifecycle" adapter="lifecycle-rec"><steps>` +
+        `<step do="a"/><repeat num="2"><step do="b"/></repeat></steps></flow></flows>`,
+    );
+    await new FlowCommand().execute(["-f", file]);
+    expect(events).toEqual(["start:-", "run:a", "run:b", "run:b", "dispose"]);
+  });
+});
+
 describe("adapter teardown", () => {
   it("disposes the adapter exactly once when a step fails", async () => {
     const file = writeFlow("fails.xml", `<step do="ok"/><step do="fail"/><step do="ok"/>`);

@@ -1299,6 +1299,8 @@ Examples:
         }
       };
 
+      await this.startAdapters(flow, env);
+
       for (const [index, step] of flow.steps.entries()) {
         if (outerScope.stopped) break;
         if (!gate || step.type === "assertions" || step.args?.interactive === "auto") {
@@ -2015,6 +2017,24 @@ Examples:
     if (step.adapter) return step.adapter;
     if (step.type === "script" || step.type === "message" || step.type === "assertions") return null;
     return flowAdaptersForTag(step.type)[0]?.name ?? null;
+  }
+
+  /** Calls `start` once on every plugin adapter the flow's steps use, in
+   * first-use order, before any step (and so before any scenario) runs. */
+  private async startAdapters(flow: ParsedFlow, env: Record<string, string>): Promise<void> {
+    const firstStep = new Map<string, ParsedStep>();
+    const walk = (steps: ParsedStep[]) => {
+      for (const step of steps) {
+        const name = this.adapterForStep(step);
+        if (name && hasFlowAdapter(name) && !firstStep.has(name)) firstStep.set(name, step);
+        walk(step.children ?? []);
+      }
+    };
+    walk(flow.steps);
+    for (const [name, step] of firstStep) {
+      const adapter = await flowAdapter(name);
+      await adapter.start?.(this.makeAdapterCtx(flow, step, env, { scenario: flow.scenarios[0] }));
+    }
   }
 
   /** Teardown errors are warnings: the flow's own result already stands. */

@@ -103,6 +103,10 @@ export interface FlowEmittedMetric {
 
 export interface FlowAdapter {
   run(step: FlowAdapterStep, ctx: FlowAdapterContext): Promise<string | void> | string | void;
+  /** Called once per flow before its first step, and before the engine
+   * starts the flow's scenario (so without baseUrl) — e.g. to open the window
+   * the audience watches while the product boots. A throw fails the flow. */
+  start?(ctx: FlowAdapterContext): Promise<void> | void;
   /** Releases what run() opened (browsers, sessions, child processes).
    * Called once per flow after its last step — also when a step failed or
    * the run was interrupted — after which the instance is dropped, so an

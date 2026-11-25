@@ -609,6 +609,7 @@ runs in-process with a typed context (`env`, `baseUrl`, `scenario`, `model`,
 `<keycloak .../>` step, for instance, dispatches to the adapter declaring the
 `keycloak` tag in its manifest.
 
+Before a flow's first step (and before its scenario starts) the engine calls `start` on each plugin adapter the flow uses.
 After each flow the engine calls every loaded adapter's optional `dispose`,
 also when a step failed, and starts the next flow with fresh instances. On
 Ctrl-C (SIGINT) or SIGTERM it runs the same teardown and exits 130 or 143.

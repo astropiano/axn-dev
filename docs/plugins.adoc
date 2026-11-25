@@ -222,6 +222,11 @@ package ships several adapters) or a factory `(base?: FlowAdapter) =>
 FlowAdapter` — the factory receives the resolved base instance when the spec
 declares `extends: "<base-adapter>"`.
 
+An optional `start(ctx)` runs once per flow before its first step, and
+before the engine starts the flow's scenario, so `ctx.baseUrl` is not set yet.
+Use it for what the audience should see from the first second, such as a
+browser window with a "starting" page while the product boots.
+
 An adapter that opens something in `run()` — a browser, a session, a child
 process — releases it in the optional `dispose(ctx)`. The engine calls it once
 per flow after the last step, also when a step failed or the run got SIGINT /
