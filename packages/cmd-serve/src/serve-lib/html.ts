@@ -91,7 +91,7 @@ export function pageShell(
   <title>${escapeHtml(title)}</title>
   ${themeFontLinks(theme)}
   ${themeBootScript(theme)}
-  ${themeStyles(theme)}
+  ${themeStyles()}
   ${dashboardStyles}
   ${menuStyles}
 </head>
@@ -370,7 +370,7 @@ const dashboardStyles = `<style>
     font-family: var(--font-heading);
     font-size: 1.05rem;
     font-weight: 900;
-    color: var(--primary-blue);
+    color: var(--accent);
     letter-spacing: -0.01em;
     text-decoration: none;
   }
@@ -494,7 +494,7 @@ const dashboardStyles = `<style>
   }
 
   .section-title svg {
-    color: var(--primary-blue);
+    color: var(--accent);
   }
 
   .dashboard-header {
@@ -1730,20 +1730,14 @@ const sharedScripts = `<script>
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   }
 
+  // Resolution and application live in the head's theme boot script
+  // (window.axnTheme); the toggle only drives it.
   function currentThemePref() {
-    return localStorage.getItem('axn-dev-theme') || AXN_THEME.defaults.mode;
-  }
-
-  function themeIdForMode(mode) {
-    const stored = localStorage.getItem('axn-dev-' + mode + '-theme');
-    return AXN_THEME.modes[stored] ? stored : AXN_THEME.defaults[mode];
+    return window.axnTheme ? axnTheme.pref() : 'auto';
   }
 
   function applyTheme(pref) {
-    const root = document.documentElement;
-    const resolved = pref === 'auto' ? getSystemTheme() : pref;
-    root.setAttribute('data-theme', resolved);
-    root.setAttribute('data-theme-name', themeIdForMode(resolved));
+    if (window.axnTheme) axnTheme.apply(pref);
 
     const btn = document.getElementById('theme-cycle');
     if (btn) {
@@ -1754,7 +1748,7 @@ const sharedScripts = `<script>
   }
 
   function setTheme(pref) {
-    localStorage.setItem('axn-dev-theme', pref);
+    if (window.axnTheme) axnTheme.store(pref);
     applyTheme(pref);
   }
 

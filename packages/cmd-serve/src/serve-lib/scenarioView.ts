@@ -64,7 +64,7 @@ export function scenarioViewHtml(
   <title>${escapeHtml(scenarioName)} — axn-dev</title>
   ${themeFontLinks(theme)}
   ${themeBootScript(theme)}
-  ${themeStyles(theme)}
+  ${themeStyles()}
   ${scenarioViewStyles}
   ${menuStyles}
 </head>

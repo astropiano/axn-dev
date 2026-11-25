@@ -16,10 +16,11 @@
  *     light-theme: axn-light                    # theme used in light mode
  *     dark-theme: axn-dark                      # theme used in dark mode
  *
- * `theme:` accepts a theme id as a shorthand for pinning the same theme to
- * both modes. The light/dark/auto toggle still applies per browser (choice
- * in localStorage, like before); the config only sets which theme each
- * mode resolves to and the default mode.
+ * Applied the way axn-term applies themes: the stylesheet carries a built-in
+ * theme on :root (so a page without any theme still looks right), and the
+ * chosen theme only overrides custom properties through
+ * `style.setProperty` in the browser. Theme values never become stylesheet or
+ * script text, so a theme file cannot inject markup or script.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -84,7 +85,7 @@ export interface ThemeFonts {
   heading?: string;
   /** Body font-family stack. */
   body?: string;
-  /** Optional stylesheet URL (e.g. Google Fonts) emitted as a <link>. */
+  /** Optional https stylesheet URL (e.g. Google Fonts), loaded when the theme is active. */
   import?: string;
 }
 
@@ -108,7 +109,7 @@ export interface ServeThemeSet {
     light: string;
     dark: string;
   };
-  /** Unique font stylesheet URLs across all discovered themes. */
+  /** Font stylesheets of the two default themes, linked for first paint. */
   fontImports: string[];
 }
 
@@ -116,10 +117,17 @@ const DEFAULT_LIGHT_THEME = "axn-light";
 const DEFAULT_DARK_THEME = "axn-dark";
 const DEFAULT_HEADING_FONT = '"Raleway", sans-serif';
 const DEFAULT_BODY_FONT = '"Lato", sans-serif';
+const DEFAULT_FONT_IMPORT =
+  "https://fonts.googleapis.com/css2?family=Raleway:wght@400;500;700;900&family=Lato:wght@400;700&display=swap";
+
+/** localStorage keys of the browser's own choice, shared by boot and toggle. */
+const MODE_KEY = "axn-dev-theme";
+const THEME_KEY_PREFIX = "axn-dev-";
+const THEME_KEY_SUFFIX = "-theme";
 
 /**
- * Last-resort palettes used when a theme omits colours or the bundled files
- * cannot be read — the axn-dark / axn-light palettes.
+ * The built-in theme — the axn-dark / axn-light palettes. It is the
+ * stylesheet's :root default, and fills what a sparse theme file leaves out.
  */
 const FALLBACK_COLORS: Record<ThemeMode, Required<Pick<ThemeColors,
   "background" | "foreground" | "selectionBackground" | "brightBlack" |
@@ -157,33 +165,76 @@ const FALLBACK_UI: Record<ThemeMode, Required<Pick<ThemeUi,
   },
 };
 
-function normalizeTheme(raw: unknown, source: string): ServeTheme | null {
+/**
+ * Hover and border, derived from the base colours when a theme does not pin
+ * them — like axn-term's design tokens. A terminal palette's brightBlack is a
+ * text grey, not a surface, so it is no fallback for either.
+ */
+const DERIVED_DEFAULTS: Record<string, string> = {
+  "--surface-hover": "color-mix(in srgb, var(--text) 8%, var(--bg))",
+  "--border": "color-mix(in srgb, var(--text) 18%, var(--bg))",
+};
+
+const THEME_ID_RE = /^[a-z0-9][a-z0-9_-]*$/i;
+/** Colour values a theme may set: hex, or rgb()/hsl() with plain numbers. */
+const COLOR_RE = /^(?:#[0-9a-f]{3,8}|(?:rgb|rgba|hsl|hsla)\([0-9.,%\s/]+\))$/i;
+/** A font-family stack: names, quotes, commas, spaces, hyphens. */
+const FONT_RE = /^[\w\s"',.-]+$/;
+
+function pickColors<T extends object>(raw: unknown): T | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === "string" && COLOR_RE.test(v.trim())) out[k] = v.trim();
+  }
+  return out as T;
+}
+
+function pickFonts(raw: unknown): ThemeFonts | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const f = raw as Record<string, unknown>;
+  const out: ThemeFonts = {};
+  if (typeof f.heading === "string" && FONT_RE.test(f.heading)) out.heading = f.heading;
+  if (typeof f.body === "string" && FONT_RE.test(f.body)) out.body = f.body;
+  if (typeof f.import === "string") {
+    try {
+      if (new URL(f.import).protocol === "https:") out.import = f.import;
+    } catch {
+      // not a URL
+    }
+  }
+  return out;
+}
+
+/** Validated theme, or null. Values that are not plain colours or font stacks
+ * are dropped (the built-in theme fills them), not passed to the page. */
+export function normalizeTheme(raw: unknown, source?: string): ServeTheme | null {
   if (typeof raw !== "object" || raw === null) return null;
   const t = raw as Record<string, unknown>;
-  if (typeof t.id !== "string" || typeof t.name !== "string") return null;
-
-  const colors = (typeof t.colors === "object" && t.colors !== null
-    ? t.colors : {}) as ThemeColors;
-  const ui = (typeof t.ui === "object" && t.ui !== null
-    ? t.ui : undefined) as ThemeUi | undefined;
-  const fonts = (typeof t.fonts === "object" && t.fonts !== null
-    ? t.fonts : undefined) as ThemeFonts | undefined;
+  if (typeof t.id !== "string" || !THEME_ID_RE.test(t.id)) return null;
+  if (typeof t.name !== "string" || t.name.trim() === "") return null;
 
   return {
     id: t.id,
     name: t.name,
     mode: t.mode === "light" ? "light" : "dark",
-    colors,
-    ui,
-    fonts,
+    colors: pickColors<ThemeColors>(t.colors) ?? {},
+    ui: pickColors<ThemeUi>(t.ui),
+    fonts: pickFonts(t.fonts),
     source,
   };
 }
 
 const THEME_FILE_RE = /\.(json|ya?ml)$/i;
 
-/** Theme dirs rescan per request — keep each parse warning to one line. */
-const warnedThemeFiles = new Set<string>();
+/** Theme dirs and config rescan per request — keep each warning to one line. */
+const warned = new Set<string>();
+
+function warnOnce(key: string, message: string): void {
+  if (warned.has(key)) return;
+  warned.add(key);
+  console.warn(`axn-dev serve: ${message}`);
+}
 
 function loadThemeDir(dir: string, into: Map<string, ServeTheme>): void {
   if (!existsSync(dir)) return;
@@ -199,13 +250,11 @@ function loadThemeDir(dir: string, into: Map<string, ServeTheme>): void {
       const raw = readFileSync(path, "utf-8");
       const parsed = file.endsWith(".json") ? JSON.parse(raw) : parseYaml(raw);
       const theme = normalizeTheme(parsed, path);
-      if (theme) into.set(theme.id, theme);
-      warnedThemeFiles.delete(path);
+      if (!theme) throw new Error("needs an id (letters, digits, - and _) and a name");
+      into.set(theme.id, theme);
+      warned.delete(path);
     } catch (e) {
-      if (!warnedThemeFiles.has(path)) {
-        warnedThemeFiles.add(path);
-        console.warn(`axn-dev serve: skipping theme ${path}: ${e instanceof Error ? e.message : e}`);
-      }
+      warnOnce(path, `skipping theme ${path}: ${e instanceof Error ? e.message : e}`);
     }
   }
 }
@@ -241,38 +290,44 @@ export function loadServeThemes(config: AxnDevConfig): ServeThemeSet {
   for (const dir of themeDirs()) loadThemeDir(dir, byId);
   const themes = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
 
+  const known = (key: string, id: unknown): id is string => {
+    if (typeof id !== "string") return false;
+    if (byId.has(id)) return true;
+    warnOnce(`config:${key}:${id}`, `serve.${key}: no theme '${id}' — known: ${[...byId.keys()].join(", ") || "(none)"}`);
+    return false;
+  };
+
   const section = serveSection(config);
   const themeSel = typeof section?.theme === "string" ? section.theme : undefined;
-  const pinnedId = themeSel && themeSel !== "auto" && themeSel !== "light" && themeSel !== "dark"
-    ? themeSel : undefined;
-  const pinned = pinnedId ? byId.get(pinnedId) : undefined;
+  const isMode = themeSel === "auto" || themeSel === "light" || themeSel === "dark";
+  const pinned = themeSel && !isMode && known("theme", themeSel) ? byId.get(themeSel) : undefined;
 
   const pick = (key: "light-theme" | "dark-theme", fallback: string): string => {
     if (pinned) return pinned.id;
     const v = section?.[key];
-    const id = typeof v === "string" && byId.has(v) ? v : fallback;
-    return byId.has(id) ? id : fallback;
+    return v !== undefined && known(key, v) ? v : fallback;
   };
 
   const defaults = {
-    mode: (themeSel === "light" || themeSel === "dark" || themeSel === "auto"
-      ? themeSel
-      : pinned ? pinned.mode : "auto") as ThemeModePref,
+    mode: (isMode ? themeSel : pinned ? pinned.mode : "auto") as ThemeModePref,
     light: pick("light-theme", DEFAULT_LIGHT_THEME),
     dark: pick("dark-theme", DEFAULT_DARK_THEME),
   };
 
   const fontImports = [...new Set(
-    themes.map((t) => t.fonts?.import).filter((u): u is string => typeof u === "string" && u.length > 0),
+    [defaults.light, defaults.dark]
+      .map((id) => byId.get(id)?.fonts?.import ?? (byId.has(id) ? undefined : DEFAULT_FONT_IMPORT))
+      .filter((u): u is string => typeof u === "string"),
   )];
 
   return { themes, defaults, fontImports };
 }
 
 /**
- * Resolve every CSS custom property for a theme. Missing pieces fall back to
- * the axn palette of the same mode, so sparse theme files still yield a
- * complete variable set.
+ * The custom properties a theme sets. Base values fall back to the built-in
+ * palette of the same mode, so switching themes never leaves another theme's
+ * colours behind. Hover and border are left out unless pinned (`ui`), so the
+ * stylesheet derives them (DERIVED_DEFAULTS).
  */
 export function themeCssVars(theme: ServeTheme): Record<string, string> {
   const mode = theme.mode;
@@ -281,31 +336,21 @@ export function themeCssVars(theme: ServeTheme): Record<string, string> {
   const fc = FALLBACK_COLORS[mode];
   const fu = FALLBACK_UI[mode];
 
-  const bg = ui.bg ?? c.background ?? fu.bg;
   const surface = ui.surface ?? c.selectionBackground ?? fu.surface;
-  const text = ui.text ?? c.foreground ?? fu.text;
-  const accent = ui.accent ?? c.blue ?? fu.accent;
-  const accentHover = ui.accentHover ?? c.cyan ?? fu.accentHover;
   const accentText = ui.textInverted ?? fu.textInverted;
 
-  return {
-    "color-scheme": mode,
-    "--bg": bg,
+  const vars: Record<string, string> = {
+    "--bg": ui.bg ?? c.background ?? fu.bg,
     "--bg-secondary": ui.bgSecondary ?? c.selectionBackground ?? fu.bgSecondary,
-    "--text": text,
+    "--text": ui.text ?? c.foreground ?? fu.text,
     "--text-muted": ui.textSecondary ?? c.brightBlack ?? fu.textSecondary,
     "--text-inverted": accentText,
     "--surface": surface,
     "--surface-solid": ui.surfaceSolid ?? surface,
-    "--surface-hover": ui.surfaceHover ?? c.brightBlack ?? fu.surfaceHover,
-    "--border": ui.border ?? c.brightBlack ?? fu.border,
-    "--accent": accent,
-    "--accent-hover": accentHover,
+    "--accent": ui.accent ?? c.blue ?? fu.accent,
+    "--accent-hover": ui.accentHover ?? c.cyan ?? fu.accentHover,
     "--accent-text": accentText,
     "--cursor": ui.cursor ?? c.cursor ?? fu.cursor,
-    // Legacy brand names, kept as aliases for existing rules.
-    "--primary-blue": "var(--accent)",
-    "--primary-blue-hover": "var(--accent-hover)",
     "--accent-red": c.red ?? fc.red,
     "--accent-green": c.green ?? fc.green,
     "--accent-yellow": c.yellow ?? fc.yellow,
@@ -317,57 +362,117 @@ export function themeCssVars(theme: ServeTheme): Record<string, string> {
     "--font-heading": theme.fonts?.heading ?? DEFAULT_HEADING_FONT,
     "--font-body": theme.fonts?.body ?? DEFAULT_BODY_FONT,
   };
+  if (ui.surfaceHover) vars["--surface-hover"] = ui.surfaceHover;
+  if (ui.border) vars["--border"] = ui.border;
+  return vars;
+}
+
+function builtinTheme(mode: ThemeMode): ServeTheme {
+  return { id: `builtin-${mode}`, name: `Built-in ${mode}`, mode, colors: FALLBACK_COLORS[mode], ui: FALLBACK_UI[mode] };
+}
+
+function cssBlock(selector: string, vars: Record<string, string>): string {
+  const body = Object.entries(vars).map(([k, v]) => `    ${k}: ${v};`).join("\n");
+  return `  ${selector} {\n${body}\n  }`;
 }
 
 /**
- * One <style> block holding every discovered theme's variables, each scoped
- * to `[data-theme-name="<id>"]` so the client can hot-swap by flipping the
- * attribute — no reload, no extra request.
+ * The built-in theme as the stylesheet's default: light on :root, dark under
+ * [data-theme="dark"], plus the derived hover/border tokens. Built from the
+ * constants above only — never from theme files — so it is always there:
+ * no theme selected, storage blocked, or the theme files missing.
  */
-export function themeStyles(set: ServeThemeSet): string {
-  const blocks = set.themes.map((t) => {
-    const vars = Object.entries(themeCssVars(t))
-      .map(([k, v]) => `    ${k}: ${v};`)
-      .join("\n");
-    return `  [data-theme-name="${t.id}"] {\n${vars}\n  }`;
-  });
-  return `<style id="axn-theme-vars">\n${blocks.join("\n\n")}\n</style>`;
+export function themeStyles(): string {
+  return `<style id="axn-theme-base">
+${cssBlock(":root", { "color-scheme": "light", ...themeCssVars(builtinTheme("light")), ...DERIVED_DEFAULTS })}
+
+${cssBlock('[data-theme="dark"]', { "color-scheme": "dark", ...themeCssVars(builtinTheme("dark")) })}
+</style>`;
 }
 
-/**
- * <link> tags for every font stylesheet the discovered themes reference.
- */
+/** <link> tags for the default themes' font stylesheets (first paint). */
 export function themeFontLinks(set: ServeThemeSet): string {
   return set.fontImports
-    .map((u) => `  <link href="${u.replace(/"/g, "&quot;")}" rel="stylesheet">`)
+    .map((u) => `  <link href="${u.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}" rel="stylesheet" data-axn-theme-font>`)
     .join("\n");
 }
 
+/** JSON that is safe inside a <script> element. */
+function scriptJson(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
 /**
- * Boot data + early theme application, emitted into <head> before any styles
- * so the right `data-theme`/`data-theme-name` attributes are set before first
- * paint (no flash). sharedScripts reuses the AXN_THEME_* consts.
+ * Theme data and the browser side of theming, in <head> before first paint.
+ * `window.axnTheme` resolves the browser's choice (localStorage, else the
+ * config defaults) and applies a theme with style.setProperty. `data-theme`
+ * follows the applied theme's own mode, so it never contradicts the colours.
+ * sharedScripts' toggle calls the same functions.
  */
 export function themeBootScript(set: ServeThemeSet): string {
-  const modes = Object.fromEntries(set.themes.map((t) => [t.id, t.mode]));
-  const boot = {
+  const data = {
     defaults: set.defaults,
-    modes,
+    keys: { mode: MODE_KEY, prefix: THEME_KEY_PREFIX, suffix: THEME_KEY_SUFFIX },
+    themes: Object.fromEntries(set.themes.map((t) => [t.id, {
+      mode: t.mode,
+      vars: themeCssVars(t),
+      ...(t.fonts?.import ? { font: t.fonts.import } : {}),
+    }])),
   };
   return `<script>
-  const AXN_THEME = ${JSON.stringify(boot)};
-  (function () {
-    try {
-      var pref = localStorage.getItem('axn-dev-theme') || AXN_THEME.defaults.mode;
-      var mode = pref === 'auto'
-        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-        : pref;
-      var id = localStorage.getItem('axn-dev-' + mode + '-theme') || AXN_THEME.defaults[mode];
-      if (!AXN_THEME.modes[id]) id = AXN_THEME.defaults[mode];
-      var root = document.documentElement;
-      root.setAttribute('data-theme', mode);
-      root.setAttribute('data-theme-name', id);
-    } catch (e) { /* defaults in the CSS apply */ }
-  })();
+  window.axnTheme = (function (data) {
+    var root = document.documentElement;
+    var applied = [];
+    function read(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+    function write(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* per tab only */ } }
+    function systemMode() {
+      return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    function pref() {
+      var p = read(data.keys.mode) || data.defaults.mode;
+      return p === 'light' || p === 'dark' || p === 'auto' ? p : 'auto';
+    }
+    function themeFor(mode) {
+      var id = read(data.keys.prefix + mode + data.keys.suffix);
+      if (!id || !data.themes[id]) id = data.defaults[mode];
+      return data.themes[id] ? { id: id, theme: data.themes[id] } : null;
+    }
+    function apply(p) {
+      var mode = p === 'auto' ? systemMode() : p;
+      var found = themeFor(mode);
+      for (var i = 0; i < applied.length; i++) root.style.removeProperty(applied[i]);
+      applied = [];
+      if (!found) {
+        // No such theme: the stylesheet's built-in theme for this mode applies.
+        root.removeAttribute('data-theme-name');
+        root.setAttribute('data-theme', mode);
+        root.style.colorScheme = mode;
+        return;
+      }
+      var vars = found.theme.vars;
+      for (var k in vars) {
+        var v = vars[k];
+        if (k.indexOf('--font-') !== 0 && window.CSS && CSS.supports && !CSS.supports('color', v)) continue;
+        root.style.setProperty(k, v);
+        applied.push(k);
+      }
+      root.setAttribute('data-theme', found.theme.mode);
+      root.setAttribute('data-theme-name', found.id);
+      root.style.colorScheme = found.theme.mode;
+      if (found.theme.font && !document.querySelector('link[data-axn-theme-font][href="' + found.theme.font.replace(/"/g, '') + '"]')) {
+        var link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = found.theme.font;
+        link.setAttribute('data-axn-theme-font', '');
+        document.head.appendChild(link);
+      }
+    }
+    function store(p) { write(data.keys.mode, p); }
+    try { apply(pref()); } catch (e) { /* the stylesheet's built-in theme applies */ }
+    return { pref: pref, apply: apply, store: store, systemMode: systemMode };
+  })(${scriptJson(data)});
 </script>`;
 }

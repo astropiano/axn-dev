@@ -92,7 +92,6 @@ API (localhost:7079):
     this.discovery = new ScenarioDiscoveryService(process.cwd(), workbase);
 
     const ctx: ServeContext = {
-      cwd: process.cwd(),
       registry: this.registry,
       flowRuns: new FlowRunManager(),
       scenarioRuns: new ScenarioRunManager(),

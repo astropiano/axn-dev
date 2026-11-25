@@ -24,8 +24,6 @@ export interface ScenarioInstance {
 }
 
 export interface ServeContext {
-  /** Working directory the server was launched from (repo/theme detection). */
-  cwd: string;
   registry: Map<string, ScenarioInstance>;
   /** Tracks flows started from the dashboard */
   flowRuns: FlowRunManager;

@@ -116,5 +116,18 @@ fonts:                         # optional
 ----
 
 Missing keys fall back to the axn palette of the same `mode`, so a sparse
-file still yields a complete theme.
+file still yields a complete theme. Hover and border colours that a theme
+does not set in `ui:` are derived from its background and text, so a
+palette-only terminal theme still gets readable hover rows and soft borders.
+
+The built-in Axn Light / Axn Dark palette is part of the page's stylesheet:
+with no theme selected, the theme files missing or browser storage blocked,
+the dashboard still renders in it. A selected theme only overrides those
+colours, and `data-theme` (light/dark) always follows the theme's own `mode`.
+
+Theme values are validated, not trusted: an `id` is letters, digits, `-` and
+`_`; colours are hex or `rgb()`/`hsl()` values; fonts are plain font-family
+stacks; `fonts.import` must be an `https:` URL and is loaded only while its
+theme is active. Anything else is dropped, and the built-in value applies.
+A config value naming a theme that does not exist logs one warning.
 
