@@ -14,6 +14,7 @@ import { ScenarioDiscoveryService, resolveDeviceEnv } from "@axn-dev/core";
 import { getComposeProjectName, getServiceEndpoints, getRunningScenarioPort, isScenarioRunning, resolveEndpoints, substituteEnvVars, type ServiceEndpoint } from "@axn-dev/core";
 import { loadWorkspaceConfig, parseYaml } from "@axn-dev/core";
 import {
+  INTERACTIVE_ENV,
   disposeFlowAdapters,
   flowAdapter,
   flowAdaptersForTag,
@@ -565,12 +566,11 @@ Examples:
 
     // A finally does not run on Ctrl-C: without this, an adapter's browser or
     // session outlives the run, and the process never exits.
-    // Started here, right before the first flow, so every exit below closes it.
+    // Steps, adapters and their subprocesses see the run mode, e.g. for a
+    // visible browser (AXN_DEV_BROWSER_HEADED=auto). Set and the host started
+    // inside the try below, so every exit restores and closes them.
+    const interactiveEnvBefore = process.env[INTERACTIVE_ENV];
     let host: InteractiveHost | null = null;
-    if (liveSession) {
-      host = await startInteractiveHost(liveSession, liveSessionPort);
-      console.log(`\nInteractive stage:   ${host.stageUrl}\nInteractive control: ${host.controlUrl}\n`);
-    }
 
     let current: ParsedFlow | null = null;
     const onSignal = (signal: NodeJS.Signals) => {
@@ -582,6 +582,11 @@ Examples:
     process.once("SIGTERM", onSignal);
 
     try {
+      if (interactive) process.env[INTERACTIVE_ENV] = "1";
+      if (liveSession) {
+        host = await startInteractiveHost(liveSession, liveSessionPort);
+        console.log(`\nInteractive stage:   ${host.stageUrl}\nInteractive control: ${host.controlUrl}\n`);
+      }
       for (const flow of selectedFlows) {
         current = flow;
         try {
@@ -599,6 +604,10 @@ Examples:
       process.removeListener("SIGINT", onSignal);
       process.removeListener("SIGTERM", onSignal);
       await host?.close();
+      if (interactive) {
+        if (interactiveEnvBefore === undefined) delete process.env[INTERACTIVE_ENV];
+        else process.env[INTERACTIVE_ENV] = interactiveEnvBefore;
+      }
       for (const [key, proc] of this.orchestratorProcesses) {
         try {
           await proc.stop();

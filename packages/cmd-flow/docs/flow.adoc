@@ -568,6 +568,28 @@ API, for other controllers: `GET /api/interactive/<runId>` (snapshot),
 after `finished`), `POST …/command` with `{"command":"next|skip|retry|abort"}`
 (409 when the run is not waiting for it).
 
+=== Browser choice (`AXN_DEV_BROWSER*`)
+
+Which browser a flow drives comes from four environment variables — set them
+in the shell for one run, or in the flow's `<env>` for that flow:
+
+[cols="2,3"]
+|===
+| Variable | Values
+
+| `AXN_DEV_BROWSER` | `chromium` (default), `firefox`, `webkit`
+| `AXN_DEV_BROWSER_CHANNEL` | Chromium only: `chrome`, `msedge`, `chrome-beta` … — an installed browser instead of Playwright's Chromium
+| `AXN_DEV_BROWSER_HEADED` | `auto` (default: a window in interactive runs, headless otherwise), `true`, `false`
+| `AXN_DEV_BROWSER_ATTACH` | Chromium only: CDP URL of a browser that is already open, e.g. one started with `--remote-debugging-port=9222 --user-data-dir=<dir>`
+|===
+
+`runner="pw"` flows use engine, channel and headed; attaching fails, as
+Playwright Test launches its own browser. Screenshot assertions use engine and
+channel but always run headless and never attach, so a comparison against a
+reference stays repeatable. Interactive runs set `AXN_DEV_INTERACTIVE=1` in
+the step environment. Plugin adapters read the same settings with
+`browserSettings(ctx.env)` from `@axn-dev/core`.
+
 === Plugin adapters
 
 Flow adapters are contributed by plugin packages via the

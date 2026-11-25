@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { browserSettings, type BrowserEngine, type BrowserSettings } from "@axn-dev/core";
 import { basename, dirname, join, resolve } from "node:path";
 import { PNG } from "pngjs";
 import pixelmatch from "pixelmatch";
@@ -78,16 +79,16 @@ export function comparePngImages(
   };
 }
 
-interface PlaywrightModule {
-  chromium: {
-    launch(opts: { headless?: boolean }): Promise<{
-      newPage(opts?: {
-        viewport?: { width: number; height: number } | null;
-      }): Promise<PlaywrightPage>;
-      close(): Promise<void>;
-    }>;
-  };
+interface PlaywrightBrowserType {
+  launch(opts: { headless?: boolean; channel?: string }): Promise<{
+    newPage(opts?: {
+      viewport?: { width: number; height: number } | null;
+    }): Promise<PlaywrightPage>;
+    close(): Promise<void>;
+  }>;
 }
+
+type PlaywrightModule = Record<BrowserEngine, PlaywrightBrowserType>;
 
 interface PlaywrightPage {
   goto(url: string, opts?: { waitUntil?: string; timeout?: number }): Promise<unknown>;
@@ -128,6 +129,8 @@ export interface ScreenshotCaptureOptions {
   /** Extra settle wait: milliseconds ("500") or a CSS selector to wait for. */
   wait?: string;
   timeoutMs?: number;
+  /** Engine and channel from AXN_DEV_BROWSER*; default headless Chromium. */
+  browser?: Pick<BrowserSettings, "engine" | "channel">;
 }
 
 /**
@@ -141,7 +144,11 @@ export interface ScreenshotCaptureOptions {
 export async function captureScreenshot(opts: ScreenshotCaptureOptions): Promise<Buffer> {
   const pw = await loadPlaywright();
   const viewport = parseViewport(opts.viewport);
-  const browser = await pw.chromium.launch({ headless: true });
+  // Always headless and never attached: a reference comparison needs a clean,
+  // repeatable browser, whatever window an interactive run shows.
+  const engine = opts.browser?.engine ?? "chromium";
+  const channel = opts.browser?.channel;
+  const browser = await pw[engine].launch({ headless: true, ...(channel ? { channel } : {}) });
   try {
     const page = await browser.newPage({ viewport });
     const timeout = opts.timeoutMs ?? 30000;
@@ -232,6 +239,7 @@ export async function evaluateScreenshotAssertion(
     fullPage: assertion.fullPage,
     viewport: assertion.viewport,
     wait: assertion.wait,
+    browser: browserSettings(ctx.env),
   });
 
   const artifactsDir = join(ctx.flowDir, ".reports", "screenshots");

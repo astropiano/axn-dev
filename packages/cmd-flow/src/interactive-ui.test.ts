@@ -78,7 +78,7 @@ beforeAll(() => {
     load: () => ({
       run: async (step, ctx) => {
         const what = step.args?.do ?? "?";
-        calls.push(what);
+        calls.push(what === "mode" ? `mode:${ctx.env.AXN_DEV_INTERACTIVE ?? "-"}` : what);
         if (what === "flaky" && failuresLeft-- > 0) throw new Error("flaky failed");
         ctx.log(`working on ${what}`);
         return `DONE ${what}`;
@@ -190,6 +190,19 @@ describe("--interactive-ui", () => {
     } finally {
       blocker.close();
     }
+  });
+});
+
+describe("AXN_DEV_INTERACTIVE", () => {
+  it("is 1 in the step env of an interactive run only, and gone afterwards", async () => {
+    const file = writeFlow("mode.xml", `<step do="mode"/>`);
+    await new FlowCommand(noTerminal).execute(["-f", file]);
+    const { api, settled } = await startRun(file);
+    await atGate(api, 0);
+    await command(api, "next");
+    expect(await settled).toBe("ok");
+    expect(calls).toEqual(["mode:-", "mode:1"]);
+    expect(process.env.AXN_DEV_INTERACTIVE).toBeUndefined();
   });
 });
 
