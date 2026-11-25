@@ -303,6 +303,17 @@ export interface FlowResult {
   metrics?: MetricRecord[];
   /** Evidence captured during the run (screenshots, video segments) */
   evidence?: EvidenceArtifact[];
+  /** --interactive: what happened at each gated top-level step. Present
+   * only on interactive runs, so a report shows the run was driven by hand. */
+  interactive?: InteractiveStepRecord[];
+}
+
+export interface InteractiveStepRecord {
+  index: number;
+  label: string;
+  outcome: "ran" | "skipped";
+  /** Failure reason of every attempt that failed before the outcome. */
+  failedAttempts: string[];
 }
 
 export interface GitInfo {

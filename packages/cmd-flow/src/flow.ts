@@ -37,6 +37,7 @@ import type {
   FlowReport,
   AssertionResult,
   EvidenceArtifact,
+  InteractiveStepRecord,
 } from "@axn-dev/flow-format";
 import { ManualFlowRunner } from "@axn-dev/flow-format";
 import { evaluateScreenshotAssertion } from "./screenshot.js";
@@ -46,6 +47,7 @@ import { loadAxnDevConfig, configSection } from "@axn-dev/core";
 import { listFlowFiles } from "@axn-dev/flow-format";
 import { runFlowWithPlaywright } from "./pw/pw-runner.js";
 import { expandEnvVars, expandFlowEnv, expandStepArgs } from "./env-expand.js";
+import { terminalGate, type StepGate } from "./interactive.js";
 
 /**
  * Execution scope for a stretch of steps. The outer scope covers the whole
@@ -67,12 +69,17 @@ interface ExecScope {
 
 const FLOW_FLAGS = [
   "--file", "-f", "--model", "-m", "--filter", "-t", "--suite",
-  "--no-stop", "--no-build", "--clean-start", "--manual", "--adapter",
+  "--no-stop", "--no-build", "--clean-start", "--manual", "--interactive", "--adapter",
   "--report", "--report-format", "--quiet", "-q", "--fail-on-unavailable-metric",
   "--infra", "-i", "--base-url", "--global", "-g", "--workbase", "--auto-port",
   "--port", "--pwd", "-c", "--yes", "-y", "-B", "--runner", "--label",
   "--metric", "--help", "-h",
 ];
+
+function stepLabel(step: ParsedStep): string {
+  return step.description ?? step.name ?? step.args?.name ?? step.src ??
+    (step.value?.trim().split("\n")[0].slice(0, 60) || `<${step.type}>`);
+}
 
 export class FlowCommand implements Command {
   readonly name = "flow";
@@ -88,7 +95,11 @@ export class FlowCommand implements Command {
     return FLOW_FLAGS.filter((f) => f.startsWith(cur) && f !== cur);
   }
 
+  constructor(private readonly gateFactory: () => StepGate = () => terminalGate()) {}
+
   private _resolvedFilePath: string | null = null;
+  /** --interactive: holds the run before each top-level step. */
+  private gate: StepGate | null = null;
   private runnerMode: string | null = process.env.AXN_FLOW_RUNNER ?? null;
   private adapterRegistry: AdapterRegistry | null = null;
   private orchestratorProcesses = new Map<string, OrchestratorProcess>();
@@ -132,6 +143,10 @@ Options:
   --adapter <name=path>   Register a custom adapter for this run (overrides config)
   --manual                Run the flow manually: show each step/assertion and
                           prompt for pass/fail verdicts, then write a report
+  --interactive           Execute the flow one top-level step at a time: wait
+                          for a key before each step (Enter run, s skip,
+                          q abort); a failed step offers retry or skip.
+                          Adapter flows only, for now
   --clean-start           Stop and remove volumes before starting the flow
   -y, --yes               Skip confirmation prompts (for --clean-start)
   --no-stop               Do not stop scenarios after the run
@@ -298,6 +313,7 @@ Examples:
     let cleanStart = false;
     let yes = false;
     let manual = false;
+    let interactive = false;
 
     for (let i = 0; i < args.length; i++) {
       const arg = args[i];
@@ -365,6 +381,8 @@ Examples:
         this.reportFormat = fmt;
       } else if (arg === "--manual") {
         manual = true;
+      } else if (arg === "--interactive") {
+        interactive = true;
       } else if (arg === "--clean-start") {
         cleanStart = true;
       } else if (arg === "--yes" || arg === "-y") {
@@ -403,6 +421,13 @@ Examples:
     }
 
     this.warnForDeployments(selectedFlows, { infra, baseUrlFlag, portFlag, autoPort, stopAfter });
+
+    if (interactive) {
+      if (manual) throw new Error("--interactive cannot be used with --manual");
+      if (infra) throw new Error("--interactive cannot be used with --infra");
+      // Before any scenario starts: a run nobody can drive fails here.
+      this.gate = this.gateFactory();
+    }
 
     if (manual) {
       if (selectedFlows.length > 1) {
@@ -708,6 +733,7 @@ Examples:
         ? { name: "deployment", service: "", adapter: "tsAdapter", readiness: [] }
         : undefined);
     if (tsScenario) {
+      if (this.gate) throw new Error("--interactive supports adapter flows only, not browser flows yet");
       return [await this.runTsAdapterFlow(flow, tsScenario, startedScenarios, infra, autoPort, portFlag, deployUrl)];
     }
 
@@ -734,6 +760,7 @@ Examples:
         this.deploymentUrl({ name: flow.name } as ParsedScenario, flow, null);
       return [await this.runCustomAdapterFlow(flow, target)];
     }
+    if (this.gate) throw new Error("--interactive supports adapter flows only, not script or message flows yet");
 
     if (infra) {
       throw new Error("--infra is currently only supported with tsAdapter flows");
@@ -1118,9 +1145,7 @@ Examples:
         } else {
           // Never drop a step: a silently skipped step makes the flow (and
           // any <repeat> around it) report green without having run it.
-          const label =
-            step.description ?? step.name ?? step.args?.name ?? step.src ??
-            (step.value?.trim().split("\n")[0].slice(0, 60) || `<${step.type}>`);
+          const label = stepLabel(step);
           throw new Error(
             `step '${label}' has no adapter that can run it in this adapter flow` +
               (step.adapter ? ` (adapter="${step.adapter}")` : "") +
@@ -1129,9 +1154,40 @@ Examples:
         }
       };
 
-      for (const step of flow.steps) {
+      const gate = this.gate;
+      for (const [index, step] of flow.steps.entries()) {
         if (outerScope.stopped) break;
-        await processStep(step, outerScope);
+        if (!gate || step.type === "assertions" || step.args?.interactive === "auto") {
+          await processStep(step, outerScope);
+          continue;
+        }
+        // Gated step: a failure stops at the gate for retry/skip instead of
+        // ending the run. A failed attempt is rolled back (its output and
+        // assertion results), so a retry is judged on its own output only.
+        const record: InteractiveStepRecord = { index, label: stepLabel(step), outcome: "ran", failedAttempts: [] };
+        (flowResult.interactive ??= []).push(record);
+        for (;;) {
+          const failed = record.failedAttempts.at(-1);
+          const cmd = await gate.wait({ index, total: flow.steps.length, label: record.label, step, failed });
+          if (cmd === "abort") throw new Error(`interactive run aborted at step ${index + 1} (${record.label})`);
+          if (cmd === "skip") {
+            record.outcome = "skipped";
+            break;
+          }
+          const mark = { out: allStdout.length, sink: outerScope.sink.length };
+          let why: string | undefined;
+          try {
+            await processStep(step, outerScope);
+            if (outerScope.stopped) why = this.scopeFailureWhy({ ...outerScope, sink: outerScope.sink.slice(mark.sink) });
+          } catch (err) {
+            why = err instanceof Error ? err.message : String(err);
+          }
+          if (why === undefined) break;
+          record.failedAttempts.push(why);
+          allStdout = allStdout.slice(0, mark.out);
+          outerScope.sink.length = mark.sink;
+          outerScope.stopped = false;
+        }
       }
 
       flowResult.response = allStdout;

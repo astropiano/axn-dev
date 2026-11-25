@@ -515,6 +515,32 @@ The host splits each `run()` batch at video boundaries and calls the hooks
 between segments, so `run()` itself never sees markers. Orchestrators without
 the hooks fail with a clear error when a `<video>` step runs.
 
+=== Interactive runs (`--interactive`)
+
+`axn-dev flow -f <file> --interactive` executes the flow one top-level step at
+a time: before each `<steps>` entry it shows the step (description and
+arguments) and waits for a key. A `<repeat>`, `<metric>` or `<video>` block is
+one step; assertions run straight after their step without a stop.
+
+[cols="1,3"]
+|===
+| Key | Effect
+
+| Enter, Space, →, PageDown | run the step
+| `s` | skip it (recorded as skipped)
+| `q`, Ctrl-C | abort the run
+|===
+
+A failed step does not end the run: it stops at the prompt again with the
+failure, and Enter or `r` retries it. A retry is judged on its own output —
+the failed attempt's output and assertion results are discarded. A step with
+`interactive="auto"` runs without stopping (setup the audience need not
+watch). The report gets `flows[].interactive`: per gated step its outcome
+(`ran`/`skipped`) and the reasons of failed attempts.
+
+Without a TTY on stdin the run fails before its first step. Adapter flows
+only for now; browser, script and message flows are rejected.
+
 === Plugin adapters
 
 Flow adapters are contributed by plugin packages via the
