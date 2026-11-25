@@ -1,0 +1,28 @@
+{
+  "name": "@axn-dev/interactive-ui",
+  "version": "0.1.0",
+  "description": "axn-dev interactive runs: the stage and control pages and their HTTP API, shared by axn-dev flow --interactive-ui and axn-dev serve",
+  "type": "module",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "prepublishOnly": "pnpm build"
+  },
+  "license": "MIT",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}

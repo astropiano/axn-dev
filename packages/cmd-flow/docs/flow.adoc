@@ -541,6 +541,33 @@ watch). The report gets `flows[].interactive`: per gated step its outcome
 Without a TTY on stdin the run fails before its first step. Adapter flows
 only for now; browser, script and message flows are rejected.
 
+==== The web stage (`--interactive-ui [port]`)
+
+`--interactive-ui` implies `--interactive` and serves the run on
+`127.0.0.1` for as long as the flow runs, printing two URLs:
+
+* `/interactive/<runId>` — the **stage** for the audience screen: the step
+  rail with each step's status, the product (the scenario's URL, framed once
+  the step that brought it up has passed), and a control strip with the next
+  step, its arguments, Next / Retry / Skip and the running step's output.
+* `/interactive/<runId>/control` — the same run without the product frame,
+  for the presenter's laptop.
+
+Keys on either page: →, PageDown or Space run the step (retry after a
+failure), `S` skips, `R` retries — a presentation clicker sends PageDown.
+The pages reload safely: the event stream starts with the full state. Terminal
+keys keep working alongside; the first command at a gate wins. Without a TTY
+the web pages are the only controller.
+
+The port is the flag's value, else `AXN_DEV_INTERACTIVE_PORT`, else
+`interactive.port` in `.axn-dev/config.yaml`, else a free one. A port that is
+taken fails the run before anything starts.
+
+API, for other controllers: `GET /api/interactive/<runId>` (snapshot),
+`GET …/events` (server-sent events, opening with a `snapshot` event and ending
+after `finished`), `POST …/command` with `{"command":"next|skip|retry|abort"}`
+(409 when the run is not waiting for it).
+
 === Plugin adapters
 
 Flow adapters are contributed by plugin packages via the

@@ -37,7 +37,8 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@axn-dev/flow-format": "workspace:*"
+    "@axn-dev/flow-format": "workspace:*",
+    "@axn-dev/interactive-ui": "workspace:*"
   },
   "peerDependencies": {
     "@axn-dev/core": "*"

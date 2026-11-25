@@ -19,7 +19,40 @@ export interface GateInfo {
  * interface.
  */
 export interface StepGate {
-  wait(info: GateInfo): Promise<GateCommand>;
+  /** Resolves with the controller's command. An aborted signal means another
+   * controller answered first: stop listening, resolve nothing. */
+  wait(info: GateInfo, signal?: AbortSignal): Promise<GateCommand>;
+}
+
+/** Status of a top-level step as a controller shows it. */
+export type ObservedStatus = "passed" | "failed" | "skipped";
+
+/** Follows an interactive run step by step, for controllers that show more
+ * than the gate (the web stage). */
+export interface RunObserver {
+  begin(flowName: string, steps: { index: number; label: string; args?: Record<string, string>; text?: string; auto?: boolean }[]): void;
+  stepStarted(index: number): void;
+  stepEnded(index: number, status: ObservedStatus, error?: string): void;
+  output(index: number, line: string): void;
+  product(url: string): void;
+  finished(passed: boolean): void;
+}
+
+/** Several controllers on one gate (terminal and web stage): the first
+ * command wins and the others stop waiting. */
+export function combineGates(gates: StepGate[]): StepGate {
+  if (gates.length === 1) return gates[0];
+  return {
+    async wait(info, signal) {
+      const lost = new AbortController();
+      signal?.addEventListener("abort", () => lost.abort(), { once: true });
+      try {
+        return await Promise.race(gates.map((g) => g.wait(info, lost.signal)));
+      } finally {
+        lost.abort();
+      }
+    },
+  };
 }
 
 interface Key {
@@ -59,21 +92,30 @@ export function terminalGate(
   }
   emitKeypressEvents(input);
   return {
-    wait(info) {
+    wait(info, signal) {
       output.write(prompt(info));
       return new Promise((resolve) => {
+        const release = () => {
+          input.off("keypress", onKey);
+          signal?.removeEventListener("abort", onAbort);
+          input.setRawMode(false);
+          input.pause();
+        };
         const onKey = (_s: string, key: Key) => {
           const cmd = keyToCommand(key ?? {}, !!info.failed);
           if (!cmd) return;
-          input.off("keypress", onKey);
-          input.setRawMode(false);
-          input.pause();
+          release();
           output.write(`${cmd}\n`);
           resolve(cmd);
+        };
+        const onAbort = () => {
+          release();
+          output.write("(answered elsewhere)\n");
         };
         input.setRawMode(true);
         input.resume();
         input.on("keypress", onKey);
+        signal?.addEventListener("abort", onAbort, { once: true });
       });
     },
   };

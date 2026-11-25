@@ -10,6 +10,9 @@
     },
     {
       "path": "../flow-format"
+    },
+    {
+      "path": "../interactive-ui"
     }
   ],
   "include": [

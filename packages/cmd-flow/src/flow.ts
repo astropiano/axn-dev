@@ -48,7 +48,9 @@ import { loadAxnDevConfig, configSection } from "@axn-dev/core";
 import { listFlowFiles } from "@axn-dev/flow-format";
 import { runFlowWithPlaywright } from "./pw/pw-runner.js";
 import { expandEnvVars, expandFlowEnv, expandStepArgs } from "./env-expand.js";
-import { terminalGate, type StepGate } from "./interactive.js";
+import { combineGates, terminalGate, type RunObserver, type StepGate } from "./interactive.js";
+import { LiveSession } from "./live-session.js";
+import { parsePort, resolveInteractivePort, startInteractiveHost, type InteractiveHost } from "./interactive-host.js";
 
 /**
  * Execution scope for a stretch of steps. The outer scope covers the whole
@@ -70,7 +72,7 @@ interface ExecScope {
 
 const FLOW_FLAGS = [
   "--file", "-f", "--model", "-m", "--filter", "-t", "--suite",
-  "--no-stop", "--no-build", "--clean-start", "--manual", "--interactive", "--adapter",
+  "--no-stop", "--no-build", "--clean-start", "--manual", "--interactive", "--interactive-ui", "--adapter",
   "--report", "--report-format", "--quiet", "-q", "--fail-on-unavailable-metric",
   "--infra", "-i", "--base-url", "--global", "-g", "--workbase", "--auto-port",
   "--port", "--pwd", "-c", "--yes", "-y", "-B", "--runner", "--label",
@@ -101,6 +103,13 @@ export class FlowCommand implements Command {
   private _resolvedFilePath: string | null = null;
   /** --interactive: holds the run before each top-level step. */
   private gate: StepGate | null = null;
+  /** --interactive-ui: the web stage following the run. */
+  private observer: RunObserver | null = null;
+  /** Top-level step running now — progress lines belong to it on the stage. */
+  private liveStep: number | null = null;
+  /** Product URL waiting for its step to pass: "ready" can come before the
+   * app answers, and a frame loaded then shows an error page for good. */
+  private pendingProduct: string | null = null;
   /** Adapter flows: scenario lifecycle for adapters declaring wantsScenario,
    * prepared once per scenario and reused by every later step. */
   private adapterScenarioRun: {
@@ -156,6 +165,11 @@ Options:
                           for a key before each step (Enter run, s skip,
                           q abort); a failed step offers retry or skip.
                           Adapter flows only, for now
+  --interactive-ui [port] --interactive plus a web stage on 127.0.0.1: step
+                          rail, product frame, Next/Skip/Retry (keys: Right,
+                          PageDown, Space, S, R). Port: this flag, else
+                          AXN_DEV_INTERACTIVE_PORT, else interactive.port in
+                          config, else a free one. Terminal keys keep working
   --clean-start           Stop and remove volumes before starting the flow
   -y, --yes               Skip confirmation prompts (for --clean-start)
   --no-stop               Do not stop scenarios after the run
@@ -323,6 +337,10 @@ Examples:
     let yes = false;
     let manual = false;
     let interactive = false;
+    let interactiveUi = false;
+    let interactiveUiPort: number | null = null;
+    let liveSession: LiveSession | null = null;
+    let liveSessionPort = 0;
 
     for (let i = 0; i < args.length; i++) {
       const arg = args[i];
@@ -392,6 +410,10 @@ Examples:
         manual = true;
       } else if (arg === "--interactive") {
         interactive = true;
+      } else if (arg === "--interactive-ui") {
+        interactive = true;
+        interactiveUi = true;
+        if (/^\d+$/.test(args[i + 1] ?? "")) interactiveUiPort = parsePort(args[++i], "--interactive-ui");
       } else if (arg === "--clean-start") {
         cleanStart = true;
       } else if (arg === "--yes" || arg === "-y") {
@@ -435,7 +457,27 @@ Examples:
       if (manual) throw new Error("--interactive cannot be used with --manual");
       if (infra) throw new Error("--interactive cannot be used with --infra");
       // Before any scenario starts: a run nobody can drive fails here.
-      this.gate = this.gateFactory();
+      if (interactiveUi) {
+        const session = new LiveSession();
+        liveSession = session;
+        // Resolved now so a bad port fails before anything starts.
+        liveSessionPort = resolveInteractivePort(
+          interactiveUiPort,
+          process.env,
+          configSection<{ port?: unknown }>(axnConfig, "interactive")?.port,
+        );
+        // The web stage is a controller on its own; the terminal joins when there is one.
+        let terminal: StepGate | null = null;
+        try {
+          terminal = this.gateFactory();
+        } catch {
+          terminal = null;
+        }
+        this.gate = combineGates(terminal ? [session, terminal] : [session]);
+        this.observer = session;
+      } else {
+        this.gate = this.gateFactory();
+      }
     }
 
     if (manual) {
@@ -523,6 +565,13 @@ Examples:
 
     // A finally does not run on Ctrl-C: without this, an adapter's browser or
     // session outlives the run, and the process never exits.
+    // Started here, right before the first flow, so every exit below closes it.
+    let host: InteractiveHost | null = null;
+    if (liveSession) {
+      host = await startInteractiveHost(liveSession, liveSessionPort);
+      console.log(`\nInteractive stage:   ${host.stageUrl}\nInteractive control: ${host.controlUrl}\n`);
+    }
+
     let current: ParsedFlow | null = null;
     const onSignal = (signal: NodeJS.Signals) => {
       console.error(`\n${signal}: tearing down flow adapters…`);
@@ -538,6 +587,10 @@ Examples:
         try {
           const flowResults = await this.runFlow(flow, modelFilter, startedScenarios, infra, autoPort, portFlag, baseUrlFlag);
           results.push(...flowResults);
+          this.observer?.finished(flowResults.every((r) => r.passed));
+        } catch (err) {
+          this.observer?.finished(false);
+          throw err;
         } finally {
           await this.disposeAdapters(flow);
         }
@@ -545,6 +598,7 @@ Examples:
     } finally {
       process.removeListener("SIGINT", onSignal);
       process.removeListener("SIGTERM", onSignal);
+      await host?.close();
       for (const [key, proc] of this.orchestratorProcesses) {
         try {
           await proc.stop();
@@ -1183,10 +1237,49 @@ Examples:
       };
 
       const gate = this.gate;
+      const observer = this.observer;
+      observer?.begin(
+        flow.name,
+        flow.steps.flatMap((step, index) =>
+          step.type === "assertions"
+            ? []
+            : [{
+                index,
+                label: stepLabel(step),
+                ...(step.args && Object.keys(step.args).length ? { args: step.args } : {}),
+                ...(step.value?.trim() ? { text: step.value.trim() } : {}),
+                ...(step.args?.interactive === "auto" ? { auto: true } : {}),
+              }]),
+      );
+      // One attempt at a top-level step as the stage sees it: running, its
+      // output tied to it, then how it ended.
+      const observed = async (index: number, step: ParsedStep, scope: ExecScope): Promise<void> => {
+        if (!observer || step.type === "assertions") return processStep(step, scope);
+        const from = allStdout.length;
+        this.liveStep = index;
+        observer.stepStarted(index);
+        try {
+          await processStep(step, scope);
+        } catch (err) {
+          observer.stepEnded(index, "failed", err instanceof Error ? err.message : String(err));
+          throw err;
+        } finally {
+          for (const line of allStdout.slice(from).split("\n")) if (line.trim()) observer.output(index, line);
+          this.liveStep = null;
+        }
+        if (scope.stopped) {
+          observer.stepEnded(index, "failed", this.scopeFailureWhy(scope));
+        } else {
+          observer.stepEnded(index, "passed");
+          if (this.pendingProduct) observer.product(this.pendingProduct);
+          this.pendingProduct = null;
+        }
+      };
+
       for (const [index, step] of flow.steps.entries()) {
         if (outerScope.stopped) break;
         if (!gate || step.type === "assertions" || step.args?.interactive === "auto") {
-          await processStep(step, outerScope);
+          await observed(index, step, outerScope);
           continue;
         }
         // Gated step: a failure stops at the gate for retry/skip instead of
@@ -1200,12 +1293,13 @@ Examples:
           if (cmd === "abort") throw new Error(`interactive run aborted at step ${index + 1} (${record.label})`);
           if (cmd === "skip") {
             record.outcome = "skipped";
+            observer?.stepEnded(index, "skipped");
             break;
           }
           const mark = { out: allStdout.length, sink: outerScope.sink.length };
           let why: string | undefined;
           try {
-            await processStep(step, outerScope);
+            await observed(index, step, outerScope);
             if (outerScope.stopped) why = this.scopeFailureWhy({ ...outerScope, sink: outerScope.sink.slice(mark.sink) });
           } catch (err) {
             why = err instanceof Error ? err.message : String(err);
@@ -1738,6 +1832,9 @@ Examples:
   /** Progress output that --quiet suppresses. */
   private progress(message: string): void {
     if (!this.quietMode) console.log(message);
+    if (this.observer && this.liveStep !== null) {
+      this.observer.output(this.liveStep, message.replace(/\x1b\[[0-9;]*m/g, "").trim());
+    }
   }
 
   /** --report: write an additional machine-readable report at the
@@ -2002,6 +2099,7 @@ Examples:
       prepared = { baseUrl: p.baseUrl, env: p.env };
       run.prepared.set(scenario.name, prepared);
     }
+    if (prepared.baseUrl && this.observer) this.pendingProduct = prepared.baseUrl;
     return { scenario, baseUrl: prepared.baseUrl, env: { ...env, ...prepared.env } };
   }
 

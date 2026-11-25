@@ -192,7 +192,7 @@ Flow files are validated at load: required attributes, known `that` assertion ty
 
 Evidence requires an orchestrator-driven `tsAdapter` flow (a browser must exist); on other adapters the run fails with an error.
 
-In **interactive runs** (`--interactive`, adapter flows only for now) the engine executes each top-level step only after a key: Enter runs it, `s` skips, `q` aborts; a failed step stops for retry (Enter/`r`) or skip, and a retry is judged on its own output. `interactive="auto"` on a step runs it without stopping. The report records `flows[].interactive` (outcome and failed attempts per gated step). Needs a TTY.
+In **interactive runs** (`--interactive`, adapter flows only for now) the engine executes each top-level step only after a key: Enter runs it, `s` skips, `q` aborts; a failed step stops for retry (Enter/`r`) or skip, and a retry is judged on its own output. `interactive="auto"` on a step runs it without stopping. The report records `flows[].interactive` (outcome and failed attempts per gated step). Needs a TTY, unless `--interactive-ui [port]` adds the web stage (`http://127.0.0.1:<port>/interactive/<runId>`, plus `/control`): step rail, product frame, Next/Skip/Retry, live output; keys →/PageDown/Space, S, R. Port: flag, else `AXN_DEV_INTERACTIVE_PORT`, else `interactive.port` config, else free.
 
 In **manual runs** (`--manual` or the serve manual view) evidence is supplied by the human: every step card has an "Attach evidence" file input (web) or an "Attach evidence file" prompt (CLI). Uploaded/copied files land in the same evidence dir layout and are recorded with their `stepIndex`, so a screenshot of a failure shows up in the report next to the failed step.
 
