@@ -161,7 +161,11 @@ importers:
         specifier: workspace:*
         version: link:../core
 
-  packages/interactive-ui: {}
+  packages/interactive-ui:
+    devDependencies:
+      '@axn-dev/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/know-nav-ripwire:
     devDependencies:

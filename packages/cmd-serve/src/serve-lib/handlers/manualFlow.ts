@@ -8,7 +8,7 @@ import { ManualFlowRunner, type ManualFlowInput } from "@axn-dev/flow-format";
 import type { ServeContext } from "../types.js";
 import { manualFlowViewHtml } from "../manualFlowViews.js";
 import { menuCountsAsync } from "./views.js";
-import { loadServeThemes } from "../theme.js";
+import { loadServeThemes } from "@axn-dev/interactive-ui";
 
 /** GET /flow/manual — render the manual execution form for a single flow. */
 export async function handleManualFlowView(ctx: ServeContext, url: URL, res: ServerResponse): Promise<void> {

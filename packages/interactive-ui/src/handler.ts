@@ -1,6 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { InteractiveCommand, InteractiveSession } from "./session.js";
+import type { ServeThemeSet } from "./theme.js";
 import { interactiveHtml } from "./views.js";
+
+/** Themes for each page request; hosts rescan per request, like serve. */
+export type InteractiveThemes = () => ServeThemeSet;
 
 const COMMANDS: ReadonlySet<string> = new Set<InteractiveCommand>(["next", "skip", "retry", "abort"]);
 
@@ -20,6 +24,7 @@ const MAX_BODY = 4096;
  */
 export function createInteractiveHandler(
   session: InteractiveSession,
+  themes: InteractiveThemes,
 ): (req: IncomingMessage, res: ServerResponse) => boolean {
   const id = encodeURIComponent(session.runId);
   const page = `/interactive/${id}`;
@@ -29,8 +34,8 @@ export function createInteractiveHandler(
     const path = new URL(req.url ?? "/", "http://localhost").pathname.replace(/\/+$/, "");
     const method = req.method ?? "GET";
 
-    if (method === "GET" && path === page) return html(res, interactiveHtml(session.runId, "stage"));
-    if (method === "GET" && path === `${page}/driver`) return html(res, interactiveHtml(session.runId, "driver"));
+    if (method === "GET" && path === page) return html(res, interactiveHtml(session.runId, "stage", themes()));
+    if (method === "GET" && path === `${page}/driver`) return html(res, interactiveHtml(session.runId, "driver", themes()));
     if (method === "GET" && path === api) return json(res, 200, session.snapshot());
     if (method === "GET" && path === `${api}/events`) {
       res.writeHead(200, {

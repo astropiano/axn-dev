@@ -1,4 +1,5 @@
 import { pageHead } from "./head.js";
+import type { ServeThemeSet } from "./theme.js";
 
 export type InteractiveView = "stage" | "driver";
 
@@ -10,11 +11,11 @@ export type InteractiveView = "stage" | "driver";
  * opens with a full snapshot, so a reload mid-run loses nothing. No dashboard
  * chrome and no link into it.
  */
-export function interactiveHtml(runId: string, view: InteractiveView): string {
+export function interactiveHtml(runId: string, view: InteractiveView, themes: ServeThemeSet): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-  ${pageHead(view === "stage" ? "axn-dev · interactive stage" : "axn-dev · interactive")}
+  ${pageHead(view === "stage" ? "axn-dev · interactive stage" : "axn-dev · interactive", themes)}
   <style>${styles}</style>
 </head>
 <body class="view-${view}">

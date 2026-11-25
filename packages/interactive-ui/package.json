@@ -14,7 +14,8 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "themes"
   ],
   "scripts": {
     "build": "tsc -b",
@@ -24,5 +25,11 @@
   "private": false,
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependencies": {
+    "@axn-dev/core": "*"
+  },
+  "devDependencies": {
+    "@axn-dev/core": "workspace:*"
   }
 }

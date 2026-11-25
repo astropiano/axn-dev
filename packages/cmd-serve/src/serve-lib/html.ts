@@ -13,12 +13,7 @@ import {
   tagTreeViewHtml,
   tagViewScripts,
 } from "./tagViews.js";
-import {
-  themeBootScript,
-  themeFontLinks,
-  themeStyles,
-  type ServeThemeSet,
-} from "./theme.js";
+import { pageHead, type ServeThemeSet } from "@axn-dev/interactive-ui";
 
 /**
  * Extract the port from a link URL, so it can be auto-associated with the
@@ -86,12 +81,7 @@ export function pageShell(
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escapeHtml(title)}</title>
-  ${themeFontLinks(theme)}
-  ${themeBootScript(theme)}
-  ${themeStyles()}
+  ${pageHead(title, theme)}
   ${dashboardStyles}
   ${menuStyles}
 </head>

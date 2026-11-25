@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { createServer, type Server } from "node:http";
 import { createInteractiveHandler } from "./handler.js";
 import { pageHead } from "./head.js";
+import type { ServeThemeSet } from "./theme.js";
 import { interactiveHtml } from "./views.js";
 import type { InteractiveCommand, InteractiveSession } from "./session.js";
 
@@ -19,8 +20,10 @@ function fakeSession(accept: boolean): InteractiveSession & { got: InteractiveCo
   };
 }
 
+const themes: ServeThemeSet = { themes: [], defaults: { mode: "auto", light: "axn-light", dark: "axn-dark" }, fontImports: [] };
+
 async function serve(session: InteractiveSession): Promise<{ origin: string; server: Server }> {
-  const handle = createInteractiveHandler(session);
+  const handle = createInteractiveHandler(session, () => themes);
   const server = createServer((req, res) => {
     if (!handle(req, res)) {
       res.writeHead(404);
@@ -66,9 +69,10 @@ describe("createInteractiveHandler", () => {
 describe("interactive pages", () => {
   it("render the shared page head and no colour of their own", () => {
     for (const view of ["stage", "driver"] as const) {
-      const html = interactiveHtml("r1", view);
-      expect(html).toContain(pageHead(view === "stage" ? "axn-dev · interactive stage" : "axn-dev · interactive"));
-      const own = html.slice(html.indexOf("</script>", html.indexOf("data-theme")));
+      const html = interactiveHtml("r1", view, themes);
+      expect(html).toContain(pageHead(view === "stage" ? "axn-dev · interactive stage" : "axn-dev · interactive", themes));
+      // The page's own CSS and script start after the shared theme head.
+      const own = html.slice(html.indexOf("</style>", html.indexOf('id="axn-theme-base"')));
       expect(own).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(/);
     }
   });

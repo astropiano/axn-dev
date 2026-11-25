@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
-import { createInteractiveHandler, type InteractiveSession } from "@axn-dev/interactive-ui";
+import { loadAxnDevConfig } from "@axn-dev/core";
+import { createInteractiveHandler, loadServeThemes, type InteractiveSession } from "@axn-dev/interactive-ui";
 
 export interface InteractiveHost {
   stageUrl: string;
@@ -35,7 +36,8 @@ export function parsePort(value: string, source: string): number {
 /** Serves the run's stage on 127.0.0.1 for as long as the flow runs. A taken
  * port fails at once, naming it; it never moves to another. */
 export async function startInteractiveHost(session: InteractiveSession, port: number): Promise<InteractiveHost> {
-  const handle = createInteractiveHandler(session);
+  // Same themes and config as `axn-dev serve`, rescanned per page like there.
+  const handle = createInteractiveHandler(session, () => loadServeThemes(loadAxnDevConfig()));
   const stagePath = `/interactive/${encodeURIComponent(session.runId)}`;
   const server: Server = createServer((req, res) => {
     if (handle(req, res)) return;

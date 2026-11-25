@@ -1,5 +1,6 @@
 /**
- * Pluggable theme system for the axn-dev serve dashboard.
+ * Pluggable theme system for axn-dev's pages: the serve dashboard and the
+ * interactive driver/stage (`axn-dev flow --interactive-ui`).
  *
  * Theme files share axn-term's theme format (`id`/`name`/`mode`/`colors`/`ui`),
  * extended with a serve-specific `fonts:` section — axn-term theme files drop
@@ -261,8 +262,8 @@ function loadThemeDir(dir: string, into: Map<string, ServeTheme>): void {
 
 function builtinThemeDir(): string {
   const here = dirname(fileURLToPath(import.meta.url));
-  // src/serve-lib and dist/serve-lib both resolve to <pkg>/themes.
-  return resolve(here, "..", "..", "themes");
+  // src/ and dist/ both resolve to <pkg>/themes.
+  return resolve(here, "..", "themes");
 }
 
 /**
