@@ -373,7 +373,10 @@ axn-dev uninstall --plugin @acme/axn-dev-hello        # remove
 
 `install --plugin` runs `npm install` into `~/.axn-dev/plugins` (the
 dedicated plugin prefix — installing into the CLI's own `node_modules`
-would lose plugins on every CLI upgrade). It validates that the package
+would lose plugins on every CLI upgrade). npm specifically is required
+here, not pnpm: plugin discovery relies on npm's flat `node_modules`
+layout, and npm ships with Node so plugin installs need no extra package
+manager on the user's machine. It validates that the package
 carries an `axn-dev` manifest, rolls back if not, and prints what the
 plugin contributed (commands, scenario types, skills).
 
