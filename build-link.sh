@@ -18,8 +18,9 @@ mkdir -p "$BIN_DIR"
 ln -sfn "$PWD/packages/cli/dist/main.js" "$BIN_DIR/axn-dev"
 echo "Linked $BIN_DIR/axn-dev -> $PWD/packages/cli/dist/main.js"
 
+resolved=$(realpath "$(command -v axn-dev)" 2>/dev/null || readlink -f "$(command -v axn-dev)" 2>/dev/null || command -v axn-dev)
 if ! command -v axn-dev >/dev/null 2>&1; then
   echo "Warning: 'axn-dev' is not on PATH. Add $BIN_DIR to your PATH."
-elif [ "$(readlink -f "$(command -v axn-dev)")" != "$PWD/packages/cli/dist/main.js" ]; then
+elif [ "$resolved" != "$PWD/packages/cli/dist/main.js" ]; then
   echo "Warning: 'axn-dev' resolves to $(command -v axn-dev), which shadows this link."
 fi
