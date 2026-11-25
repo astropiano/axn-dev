@@ -455,8 +455,12 @@ checks are:
 
 `<picture>` and `<video>` are inline step units — like `<assertions>` they can
 sit anywhere between steps and capture evidence at that point in the run.
-Both require an orchestrator-driven `tsAdapter` flow (a browser must exist);
-on other adapters the run fails with an error.
+Both work in an orchestrator-driven `tsAdapter` flow (a browser must exist).
+In an adapter flow, `<video>` works when the adapter of the steps inside it
+records video (`videoStart`/`videoStop`, see `docs/plugins.adoc`); the file
+lands in the same evidence folder and the report's `evidence[]`. `<picture>`
+in an adapter flow, or `<video>` with an adapter that cannot record, fails the
+run with an error.
 
 [source,xml]
 ----
@@ -515,6 +519,89 @@ The host splits each `run()` batch at video boundaries and calls the hooks
 between segments, so `run()` itself never sees markers. Orchestrators without
 the hooks fail with a clear error when a `<video>` step runs.
 
+=== Interactive runs (`--interactive`)
+
+`axn-dev flow -f <file> --interactive` executes the flow one top-level step at
+a time: before each `<steps>` entry it shows the step (description and
+arguments) and waits for a key. A `<repeat>`, `<metric>` or `<video>` block is
+one step; assertions run straight after their step without a stop.
+
+[cols="1,3"]
+|===
+| Key | Effect
+
+| Enter, Space, →, PageDown | run the step
+| `s` | skip it (recorded as skipped)
+| `q`, Ctrl-C | abort the run
+|===
+
+A failed step does not end the run: it stops at the prompt again with the
+failure, and Enter or `r` retries it. A retry is judged on its own output —
+the failed attempt's output and assertion results are discarded. A step with
+`interactive="auto"` runs without stopping (setup the audience need not
+watch). The report gets `flows[].interactive`: per gated step its outcome
+(`ran`/`skipped`) and the reasons of failed attempts.
+
+Without a TTY on stdin the run fails before its first step. Adapter flows
+only for now; browser, script and message flows are rejected.
+
+==== The driver page (`--interactive-ui [port]`)
+
+`--interactive-ui` implies `--interactive` and serves the run on
+`127.0.0.1` for as long as the flow runs. Open `http://127.0.0.1:<port>/` in
+any browser: it always lands on the current run's driver, so the address
+stays the same from run to run.
+
+* `/interactive/<runId>/driver` — the **driver**: the step rail with each
+  step's status, the run's output, and a strip with the next step, its
+  arguments and Next / Retry / Skip.
+* `/interactive/<runId>` — the **stage**: the same, with the product (the
+  scenario's URL) framed once the step that brought it up has passed.
+
+The product normally runs in a browser window of its own: interactive runs
+show the browser (`AXN_DEV_BROWSER_HEADED=auto`), or drive a Chrome you
+opened (`AXN_DEV_BROWSER_ATTACH`, see "Browser choice"). Then the stage shows
+the driver layout too, since a frame would only show a second, unrelated
+session. With `AXN_DEV_BROWSER_HEADED=false` and no attach, the stage frames
+the product.
+
+Keys on either page: →, PageDown or Space run the step (retry after a
+failure), `S` skips, `R` retries — a presentation clicker sends PageDown.
+The pages reload safely: the event stream starts with the full state. Terminal
+keys keep working alongside; the first command at a gate wins. Without a TTY
+the web pages are the only controller.
+
+The port is the flag's value, else `AXN_DEV_INTERACTIVE_PORT`, else
+`interactive.port` in `.axn-dev/config.yaml`, else a free one. A port that is
+taken fails the run before anything starts.
+
+API, for other controllers: `GET /api/interactive/<runId>` (snapshot),
+`GET …/events` (server-sent events, opening with a `snapshot` event and ending
+after `finished`), `POST …/command` with `{"command":"next|skip|retry|abort"}`
+(409 when the run is not waiting for it).
+
+=== Browser choice (`AXN_DEV_BROWSER*`)
+
+Which browser a flow drives comes from four environment variables — set them
+in the shell for one run, or in the flow's `<env>` for that flow:
+
+[cols="2,3"]
+|===
+| Variable | Values
+
+| `AXN_DEV_BROWSER` | `chromium` (default), `firefox`, `webkit`
+| `AXN_DEV_BROWSER_CHANNEL` | Chromium only: `chrome`, `msedge`, `chrome-beta` … — an installed browser instead of Playwright's Chromium
+| `AXN_DEV_BROWSER_HEADED` | `auto` (default: a window in interactive runs, headless otherwise), `true`, `false`
+| `AXN_DEV_BROWSER_ATTACH` | Chromium only: CDP URL of a browser that is already open, e.g. one started with `--remote-debugging-port=9222 --user-data-dir=<dir>`
+|===
+
+`runner="pw"` flows use engine, channel and headed; attaching fails, as
+Playwright Test launches its own browser. Screenshot assertions use engine and
+channel but always run headless and never attach, so a comparison against a
+reference stays repeatable. Interactive runs set `AXN_DEV_INTERACTIVE=1` in
+the step environment. Plugin adapters read the same settings with
+`browserSettings(ctx.env)` from `@axn-dev/core`.
+
 === Plugin adapters
 
 Flow adapters are contributed by plugin packages via the
@@ -525,6 +612,11 @@ runs in-process with a typed context (`env`, `baseUrl`, `scenario`, `model`,
 `runScript`, ...). An adapter may also own custom step tags — a
 `<keycloak .../>` step, for instance, dispatches to the adapter declaring the
 `keycloak` tag in its manifest.
+
+Before a flow's first step (and before its scenario starts) the engine calls `start` on each plugin adapter the flow uses.
+After each flow the engine calls every loaded adapter's optional `dispose`,
+also when a step failed, and starts the next flow with fresh instances. On
+Ctrl-C (SIGINT) or SIGTERM it runs the same teardown and exits 130 or 143.
 
 `axn-dev flow list-adapters` lists the registered adapters and their tags.
 `http` (generic POST of the `usermessage` to a scenario base URL) is bundled

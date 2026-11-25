@@ -303,6 +303,17 @@ export interface FlowResult {
   metrics?: MetricRecord[];
   /** Evidence captured during the run (screenshots, video segments) */
   evidence?: EvidenceArtifact[];
+  /** --interactive: what happened at each gated top-level step. Present
+   * only on interactive runs, so a report shows the run was driven by hand. */
+  interactive?: InteractiveStepRecord[];
+}
+
+export interface InteractiveStepRecord {
+  index: number;
+  label: string;
+  outcome: "ran" | "skipped";
+  /** Failure reason of every attempt that failed before the outcome. */
+  failedAttempts: string[];
 }
 
 export interface GitInfo {
@@ -922,14 +933,18 @@ export function loadFlowsFromFile(filePath: string): ParsedFlow[] {
     const includeSpecs = collectStepIncludes(parsed, f, orderedDoc, i);
     flow.steps = expandStepRefs(flow.steps, flowDir, includeSpecs);
     // <flow adapter="x"> — default step adapter: adapter-less script steps
-    // use it. Scenario adapters are unaffected — they govern <usermessage>
-    // routing and scenario lifecycle, not step dispatch.
+    // use it, including those inside <repeat>/<metric>/<video>, which would
+    // otherwise have no runner in an adapter flow. Scenario adapters are
+    // unaffected — they govern <usermessage> routing and scenario
+    // lifecycle, not step dispatch.
     if (flow.adapter) {
-      flow.steps = flow.steps.map((s) =>
-        s.type === "script" && !s.adapter && !stepRefOf(s)
-          ? { ...s, adapter: flow.adapter }
-          : s,
-      );
+      const adapter = flow.adapter;
+      const withDefault = (steps: ParsedStep[]): ParsedStep[] =>
+        steps.map((s) => {
+          const own = s.type === "script" && !s.adapter && !stepRefOf(s) ? { ...s, adapter } : s;
+          return own.children ? { ...own, children: withDefault(own.children) } : own;
+        });
+      flow.steps = withDefault(flow.steps);
     }
     validateFlow(flow);
     return flow;

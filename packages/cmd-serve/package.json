@@ -14,8 +14,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist",
-    "themes"
+    "dist"
   ],
   "axn-dev": {
     "commands": [
@@ -37,7 +36,8 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@axn-dev/flow-format": "workspace:*"
+    "@axn-dev/flow-format": "workspace:*",
+    "@axn-dev/interactive-ui": "workspace:*"
   },
   "peerDependencies": {
     "@axn-dev/core": "*"

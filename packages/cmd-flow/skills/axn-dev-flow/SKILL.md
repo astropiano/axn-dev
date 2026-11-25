@@ -112,7 +112,7 @@ Feature: example - how late is it
 
 ### Elements
 
-`<flow name="..." orchestrator="..." adapter="..." base-url="...">`:: A single test flow. `orchestrator` points to a TypeScript orchestrator script (see below). `adapter` is the *default step adapter* — `<step>`/`<script>` units without their own `adapter=` use it — e.g. `<flow adapter="axn-term">` lets a flow of adapter steps omit `adapter=` on every step; it does **not** affect `<usermessage>` or custom tags. `base-url` is the *default deployment URL* — a scenario-less flow pointing at an already-running deployment (k8s, staging…); `url=` on a `<scenario>` and `--base-url` take precedence.
+`<flow name="..." orchestrator="..." adapter="..." base-url="...">`:: A single test flow. `orchestrator` points to a TypeScript orchestrator script (see below). `adapter` is the *default step adapter* — `<step>`/`<script>` units without their own `adapter=` use it, also inside `<repeat>`, `<metric>` and `<video>` — e.g. `<flow adapter="axn-term">` lets a flow of adapter steps omit `adapter=` on every step; it does **not** affect `<usermessage>` or custom tags. In an adapter flow, a step no adapter can run fails the flow, naming the step; it is never skipped. `base-url` is the *default deployment URL* — a scenario-less flow pointing at an already-running deployment (k8s, staging…); `url=` on a `<scenario>` and `--base-url` take precedence.
 
 `<scenarios>`:: One or more `<scenario>` elements to start and test against.
 
@@ -191,6 +191,8 @@ Flow files are validated at load: required attributes, known `that` assertion ty
 ```
 
 Evidence requires an orchestrator-driven `tsAdapter` flow (a browser must exist); on other adapters the run fails with an error.
+
+In **interactive runs** (`--interactive`, adapter flows only for now) the engine executes each top-level step only after a key: Enter runs it, `s` skips, `q` aborts; a failed step stops for retry (Enter/`r`) or skip, and a retry is judged on its own output. `interactive="auto"` on a step runs it without stopping. The report records `flows[].interactive` (outcome and failed attempts per gated step). Needs a TTY, unless `--interactive-ui [port]` serves a driver page — open `http://127.0.0.1:<port>/` (→ `/interactive/<runId>/driver`): step rail, Next/Skip/Retry, live output, while the product runs in its own visible or attached browser window (`/interactive/<runId>` frames it instead only when `AXN_DEV_BROWSER_HEADED=false`); keys →/PageDown/Space, S, R. Port: flag, else `AXN_DEV_INTERACTIVE_PORT`, else `interactive.port` config, else free. **Browser** for pw flows, screenshot assertions and browser-driving adapters: `AXN_DEV_BROWSER` (chromium|firefox|webkit), `AXN_DEV_BROWSER_CHANNEL` (chrome, msedge…), `AXN_DEV_BROWSER_HEADED` (auto = window when interactive), `AXN_DEV_BROWSER_ATTACH` (CDP URL of an open Chrome) — shell or flow `<env>`.
 
 In **manual runs** (`--manual` or the serve manual view) evidence is supplied by the human: every step card has an "Attach evidence" file input (web) or an "Attach evidence file" prompt (CLI). Uploaded/copied files land in the same evidence dir layout and are recorded with their `stepIndex`, so a screenshot of a failure shows up in the report next to the failed step.
 

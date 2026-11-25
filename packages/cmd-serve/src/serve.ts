@@ -33,7 +33,7 @@ Start the axn-dev proxy server. This is a persistent HTTP server that:
 The server runs until stopped with Ctrl+C, via this CLI's --stop flag, or via POST /stop.
 
 The dashboard is themeable: axn-term-format theme files are discovered from
-<axn-dev>/themes (bundled: axn-dark, axn-light) and ~/.axn-dev/themes/.
+@axn-dev/interactive-ui/themes (bundled: axn-dark, axn-light) and ~/.axn-dev/themes/.
 Select via the serve: config section (theme, light-theme, dark-theme).
 
 Options:

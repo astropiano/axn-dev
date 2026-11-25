@@ -17,7 +17,7 @@ import { driverFor, getRunningDriverDirs, hasDriver } from "@axn-dev/core";
 import { devServerUrlEnv } from "@axn-dev/core";
 import type { ServeContext, ScenarioInstance } from "../types.js";
 import type { ScenarioLink } from "@axn-dev/core";
-import { loadServeThemes } from "../theme.js";
+import { loadServeThemes } from "@axn-dev/interactive-ui";
 
 function menuCountsFrom(
   globalScenarios: ScenarioInfo[],

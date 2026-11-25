@@ -222,6 +222,31 @@ package ships several adapters) or a factory `(base?: FlowAdapter) =>
 FlowAdapter` — the factory receives the resolved base instance when the spec
 declares `extends: "<base-adapter>"`.
 
+An optional `start(ctx)` runs once per flow before its first step, and
+before the engine starts the flow's scenario, so `ctx.baseUrl` is not set yet.
+Use it for what the audience should see from the first second, such as a
+browser window with a "starting" page while the product boots.
+
+An adapter that drives a browser can record `<video name="…">` blocks in an
+adapter flow by implementing `videoStart(name, dir, ctx)` and
+`videoStop(name, ctx)`: the engine calls them around the block's steps (stop
+also when a step fails), and `videoStop` returns the file it wrote into `dir`,
+which the report lists under `evidence`. Record the live page in place
+(Playwright's `page.screencast.start({ path })`) so state carries across.
+
+An adapter that opens something in `run()` — a browser, a session, a child
+process — releases it in the optional `dispose(ctx)`. The engine calls it once
+per flow after the last step, also when a step failed or the run got SIGINT /
+SIGTERM (exit 130 / 143), and then drops the instance: the next flow gets a
+fresh one from `load`. Without `dispose`, an open browser keeps the process
+alive after the results print.
+
+An adapter that drives a browser should honour the flow's browser choice:
+`browserSettings(ctx.env)` from `@axn-dev/core` resolves `AXN_DEV_BROWSER*`
+(engine, channel, headed, attach) the way axn-dev's own runners do, and makes
+`headed: auto` follow interactive runs. Launch with your own Playwright copy:
+`pw[s.engine].launch(s.launch)`, or `pw.chromium.connectOverCDP(s.attach)`.
+
 Dispatch rules in a flow file:
 
 * `<step>`/`<script>` without `adapter=` — built-in script engine (tsx subprocess, batched through the orchestrator if configured)

@@ -44,6 +44,8 @@
           "--no-build",
           "--clean-start",
           "--manual",
+          "--interactive",
+          "--interactive-ui",
           "--adapter",
           "--report",
           "--report-format",
@@ -79,7 +81,8 @@
     "@playwright/test": "^1.62.1",
     "pixelmatch": "^7.2.0",
     "pngjs": "^7.0.0",
-    "@axn-dev/flow-format": "workspace:*"
+    "@axn-dev/flow-format": "workspace:*",
+    "@axn-dev/interactive-ui": "workspace:*"
   },
   "peerDependencies": {
     "@axn-dev/core": "*"

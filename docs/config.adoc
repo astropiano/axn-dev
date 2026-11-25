@@ -54,7 +54,9 @@ Configuration].
 
 === Serve dashboard themes (`serve:`)
 
-`axn-dev serve` themes its dashboard with pluggable theme files. The format
+`axn-dev serve` themes its dashboard with pluggable theme files; the
+interactive driver and stage of `axn-dev flow --interactive-ui` use the same
+themes and the same `serve:` settings. The format
 is shared with axn-term (`id`, `name`, `mode`, `colors`, `ui`) plus a
 serve-specific `fonts:` section — an axn-term theme file drops in unchanged.
 Axn Dark and Axn Light ship bundled as examples and are the defaults.
@@ -74,7 +76,7 @@ the default mode for new browsers.
 
 Theme files (`*.yaml`, `*.yml`, `*.json`) are discovered from two channels:
 
-1. `<pkg>/themes/` — bundled (`axn-dark`, `axn-light`)
+1. `@axn-dev/interactive-ui/themes/` — bundled (`axn-dark`, `axn-light`)
 2. `~/.axn-dev/themes/` — your themes, no config needed
 
 User themes win on `id` collisions, so a user file can replace a bundled

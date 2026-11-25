@@ -1,5 +1,5 @@
 import { escapeHtml, pageShell, type MenuCounts } from "./html.js";
-import type { ServeThemeSet } from "./theme.js";
+import type { ServeThemeSet } from "@axn-dev/interactive-ui";
 import type { FlowInfo } from "./flows.js";
 import type { ParsedFlow, ParsedStep } from "@axn-dev/flow-format";
 

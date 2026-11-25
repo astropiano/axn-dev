@@ -1,12 +1,7 @@
 import type { ScenarioLink } from "@axn-dev/core";
 import { escapeHtml, linksChevronHtml, portFromUrl } from "./html.js";
 import { menuChevronHtml, menuStyles, menuScripts } from "./menu.js";
-import {
-  themeBootScript,
-  themeFontLinks,
-  themeStyles,
-  type ServeThemeSet,
-} from "./theme.js";
+import { pageHead, type ServeThemeSet } from "@axn-dev/interactive-ui";
 
 export function scenarioViewHtml(
   scenarioName: string,
@@ -59,12 +54,7 @@ export function scenarioViewHtml(
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escapeHtml(scenarioName)} — axn-dev</title>
-  ${themeFontLinks(theme)}
-  ${themeBootScript(theme)}
-  ${themeStyles()}
+  ${pageHead(`${scenarioName} — axn-dev`, theme)}
   ${scenarioViewStyles}
   ${menuStyles}
 </head>

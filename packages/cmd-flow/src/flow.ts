@@ -14,6 +14,9 @@ import { ScenarioDiscoveryService, resolveDeviceEnv } from "@axn-dev/core";
 import { getComposeProjectName, getServiceEndpoints, getRunningScenarioPort, isScenarioRunning, resolveEndpoints, substituteEnvVars, type ServiceEndpoint } from "@axn-dev/core";
 import { loadWorkspaceConfig, parseYaml } from "@axn-dev/core";
 import {
+  INTERACTIVE_ENV,
+  browserSettings,
+  disposeFlowAdapters,
   flowAdapter,
   flowAdaptersForTag,
   flowAdapterSpecs,
@@ -37,6 +40,7 @@ import type {
   FlowReport,
   AssertionResult,
   EvidenceArtifact,
+  InteractiveStepRecord,
 } from "@axn-dev/flow-format";
 import { ManualFlowRunner } from "@axn-dev/flow-format";
 import { evaluateScreenshotAssertion } from "./screenshot.js";
@@ -46,6 +50,9 @@ import { loadAxnDevConfig, configSection } from "@axn-dev/core";
 import { listFlowFiles } from "@axn-dev/flow-format";
 import { runFlowWithPlaywright } from "./pw/pw-runner.js";
 import { expandEnvVars, expandFlowEnv, expandStepArgs } from "./env-expand.js";
+import { combineGates, terminalGate, type RunObserver, type StepGate } from "./interactive.js";
+import { LiveSession } from "./live-session.js";
+import { parsePort, resolveInteractivePort, startInteractiveHost, type InteractiveHost } from "./interactive-host.js";
 
 /**
  * Execution scope for a stretch of steps. The outer scope covers the whole
@@ -67,12 +74,17 @@ interface ExecScope {
 
 const FLOW_FLAGS = [
   "--file", "-f", "--model", "-m", "--filter", "-t", "--suite",
-  "--no-stop", "--no-build", "--clean-start", "--manual", "--adapter",
+  "--no-stop", "--no-build", "--clean-start", "--manual", "--interactive", "--interactive-ui", "--adapter",
   "--report", "--report-format", "--quiet", "-q", "--fail-on-unavailable-metric",
   "--infra", "-i", "--base-url", "--global", "-g", "--workbase", "--auto-port",
   "--port", "--pwd", "-c", "--yes", "-y", "-B", "--runner", "--label",
   "--metric", "--help", "-h",
 ];
+
+function stepLabel(step: ParsedStep): string {
+  return step.description ?? step.name ?? step.args?.name ?? step.src ??
+    (step.value?.trim().split("\n")[0].slice(0, 60) || `<${step.type}>`);
+}
 
 export class FlowCommand implements Command {
   readonly name = "flow";
@@ -88,7 +100,28 @@ export class FlowCommand implements Command {
     return FLOW_FLAGS.filter((f) => f.startsWith(cur) && f !== cur);
   }
 
+  constructor(private readonly gateFactory: () => StepGate = () => terminalGate()) {}
+
   private _resolvedFilePath: string | null = null;
+  /** --interactive: holds the run before each top-level step. */
+  private gate: StepGate | null = null;
+  /** --interactive-ui: the web stage following the run. */
+  private observer: RunObserver | null = null;
+  /** Top-level step running now — progress lines belong to it on the stage. */
+  private liveStep: number | null = null;
+  /** Product URL waiting for its step to pass: "ready" can come before the
+   * app answers, and a frame loaded then shows an error page for good. */
+  private pendingProduct: string | null = null;
+  /** The product shows in a browser window of its own this flow. */
+  private productWindow = false;
+  /** Adapter flows: scenario lifecycle for adapters declaring wantsScenario,
+   * prepared once per scenario and reused by every later step. */
+  private adapterScenarioRun: {
+    started: Set<string>;
+    autoPort: boolean;
+    portFlag: number | null;
+    prepared: Map<string, { baseUrl: string; env: Record<string, string> }>;
+  } | null = null;
   private runnerMode: string | null = process.env.AXN_FLOW_RUNNER ?? null;
   private adapterRegistry: AdapterRegistry | null = null;
   private orchestratorProcesses = new Map<string, OrchestratorProcess>();
@@ -132,6 +165,15 @@ Options:
   --adapter <name=path>   Register a custom adapter for this run (overrides config)
   --manual                Run the flow manually: show each step/assertion and
                           prompt for pass/fail verdicts, then write a report
+  --interactive           Execute the flow one top-level step at a time: wait
+                          for a key before each step (Enter run, s skip,
+                          q abort); a failed step offers retry or skip.
+                          Adapter flows only, for now
+  --interactive-ui [port] --interactive plus a web stage on 127.0.0.1: step
+                          rail, product frame, Next/Skip/Retry (keys: Right,
+                          PageDown, Space, S, R). Port: this flag, else
+                          AXN_DEV_INTERACTIVE_PORT, else interactive.port in
+                          config, else a free one. Terminal keys keep working
   --clean-start           Stop and remove volumes before starting the flow
   -y, --yes               Skip confirmation prompts (for --clean-start)
   --no-stop               Do not stop scenarios after the run
@@ -298,6 +340,11 @@ Examples:
     let cleanStart = false;
     let yes = false;
     let manual = false;
+    let interactive = false;
+    let interactiveUi = false;
+    let interactiveUiPort: number | null = null;
+    let liveSession: LiveSession | null = null;
+    let liveSessionPort = 0;
 
     for (let i = 0; i < args.length; i++) {
       const arg = args[i];
@@ -365,6 +412,12 @@ Examples:
         this.reportFormat = fmt;
       } else if (arg === "--manual") {
         manual = true;
+      } else if (arg === "--interactive") {
+        interactive = true;
+      } else if (arg === "--interactive-ui") {
+        interactive = true;
+        interactiveUi = true;
+        if (/^\d+$/.test(args[i + 1] ?? "")) interactiveUiPort = parsePort(args[++i], "--interactive-ui");
       } else if (arg === "--clean-start") {
         cleanStart = true;
       } else if (arg === "--yes" || arg === "-y") {
@@ -403,6 +456,33 @@ Examples:
     }
 
     this.warnForDeployments(selectedFlows, { infra, baseUrlFlag, portFlag, autoPort, stopAfter });
+
+    if (interactive) {
+      if (manual) throw new Error("--interactive cannot be used with --manual");
+      if (infra) throw new Error("--interactive cannot be used with --infra");
+      // Before any scenario starts: a run nobody can drive fails here.
+      if (interactiveUi) {
+        const session = new LiveSession();
+        liveSession = session;
+        // Resolved now so a bad port fails before anything starts.
+        liveSessionPort = resolveInteractivePort(
+          interactiveUiPort,
+          process.env,
+          configSection<{ port?: unknown }>(axnConfig, "interactive")?.port,
+        );
+        // The web stage is a controller on its own; the terminal joins when there is one.
+        let terminal: StepGate | null = null;
+        try {
+          terminal = this.gateFactory();
+        } catch {
+          terminal = null;
+        }
+        this.gate = combineGates(terminal ? [session, terminal] : [session]);
+        this.observer = session;
+      } else {
+        this.gate = this.gateFactory();
+      }
+    }
 
     if (manual) {
       if (selectedFlows.length > 1) {
@@ -487,12 +567,50 @@ Examples:
     const startedScenarios = new Set<string>();
     const results: FlowResult[] = [];
 
+    // A finally does not run on Ctrl-C: without this, an adapter's browser or
+    // session outlives the run, and the process never exits.
+    // Steps, adapters and their subprocesses see the run mode, e.g. for a
+    // visible browser (AXN_DEV_BROWSER_HEADED=auto). Set and the host started
+    // inside the try below, so every exit restores and closes them.
+    const interactiveEnvBefore = process.env[INTERACTIVE_ENV];
+    let host: InteractiveHost | null = null;
+
+    let current: ParsedFlow | null = null;
+    const onSignal = (signal: NodeJS.Signals) => {
+      console.error(`\n${signal}: tearing down flow adapters…`);
+      void this.disposeAdapters(current).finally(() =>
+        process.exit(signal === "SIGINT" ? 130 : 143));
+    };
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+
     try {
+      if (interactive) process.env[INTERACTIVE_ENV] = "1";
+      if (liveSession) {
+        host = await startInteractiveHost(liveSession, liveSessionPort);
+        console.log(`\nInteractive driver: ${host.driverUrl}\nInteractive stage:  ${host.stageUrl}\n`);
+      }
       for (const flow of selectedFlows) {
-        const flowResults = await this.runFlow(flow, modelFilter, startedScenarios, infra, autoPort, portFlag, baseUrlFlag);
-        results.push(...flowResults);
+        current = flow;
+        try {
+          const flowResults = await this.runFlow(flow, modelFilter, startedScenarios, infra, autoPort, portFlag, baseUrlFlag);
+          results.push(...flowResults);
+          this.observer?.finished(flowResults.every((r) => r.passed));
+        } catch (err) {
+          this.observer?.finished(false);
+          throw err;
+        } finally {
+          await this.disposeAdapters(flow);
+        }
       }
     } finally {
+      process.removeListener("SIGINT", onSignal);
+      process.removeListener("SIGTERM", onSignal);
+      await host?.close();
+      if (interactive) {
+        if (interactiveEnvBefore === undefined) delete process.env[INTERACTIVE_ENV];
+        else process.env[INTERACTIVE_ENV] = interactiveEnvBefore;
+      }
       for (const [key, proc] of this.orchestratorProcesses) {
         try {
           await proc.stop();
@@ -699,31 +817,34 @@ Examples:
     portFlag: number | null = null,
     deployUrl: string | null = null
   ): Promise<FlowResult[]> {
-    // Scenario-less flow with an explicit deployment target — a synthetic
-    // tsAdapter scenario carries the URL; orchestrator/readiness can come
-    // from the <flow> attributes.
-    const tsScenario =
-      flow.scenarios.find((s) => s.adapter === "tsAdapter") ??
-      (flow.scenarios.length === 0 && (deployUrl ?? flow.baseUrl)
-        ? { name: "deployment", service: "", adapter: "tsAdapter", readiness: [] }
-        : undefined);
-    if (tsScenario) {
-      return [await this.runTsAdapterFlow(flow, tsScenario, startedScenarios, infra, autoPort, portFlag, deployUrl)];
-    }
-
     const isCustomUnit = (s: ParsedStep) =>
       // <script adapter="x"> routed to a non-message adapter (plugin or file)
       (s.type === "script" &&
         !!s.adapter &&
         s.adapter !== "tsAdapter" &&
         !this.servesMessage(s.adapter)) ||
-      // custom step tags dispatch to the adapter owning the tag; <repeat>
-      // and <metric> are containers — their children are checked
-      // individually
-      (s.type !== "script" && s.type !== "message" && s.type !== "assertions" && s.type !== "repeat" && s.type !== "extract" && s.type !== "metric");
-    const hasCustomAdapterStep = flow.steps.some(
-      (s) => isCustomUnit(s) || (s.children ?? []).some(isCustomUnit)
-    );
+      // custom step tags dispatch to the adapter owning the tag; <repeat>,
+      // <metric> and <video> are containers — their children are checked
+      // individually; a <picture> alone needs an orchestrator
+      (s.type !== "script" && s.type !== "message" && s.type !== "assertions" && s.type !== "repeat" &&
+        s.type !== "extract" && s.type !== "metric" && s.type !== "video" && s.type !== "picture");
+    const anyCustomUnit = (steps: ParsedStep[]): boolean =>
+      steps.some((s) => isCustomUnit(s) || anyCustomUnit(s.children ?? []));
+    const hasCustomAdapterStep = anyCustomUnit(flow.steps);
+    // Scenario-less flow with an explicit deployment target — a synthetic
+    // tsAdapter scenario carries the URL; orchestrator/readiness can come
+    // from the <flow> attributes. Not for a flow of plugin-adapter steps:
+    // the adapter path below resolves the deployment URL itself.
+    const tsScenario =
+      flow.scenarios.find((s) => s.adapter === "tsAdapter") ??
+      (flow.scenarios.length === 0 && !hasCustomAdapterStep && (deployUrl ?? flow.baseUrl)
+        ? { name: "deployment", service: "", adapter: "tsAdapter", readiness: [] }
+        : undefined);
+    if (tsScenario) {
+      if (this.gate) throw new Error("--interactive supports adapter flows only, not browser flows yet");
+      return [await this.runTsAdapterFlow(flow, tsScenario, startedScenarios, infra, autoPort, portFlag, deployUrl)];
+    }
+
     if (hasCustomAdapterStep) {
       // Custom-adapter steps get BASE_URL when the run targets a deployment.
       // The stub lookup also resolves a scenario-less <flow base-url>.
@@ -732,8 +853,10 @@ Examples:
           .map((s) => this.deploymentUrl(s, flow, deployUrl))
           .find((u): u is string => u !== null) ??
         this.deploymentUrl({ name: flow.name } as ParsedScenario, flow, null);
+      this.adapterScenarioRun = { started: startedScenarios, autoPort, portFlag, prepared: new Map() };
       return [await this.runCustomAdapterFlow(flow, target)];
     }
+    if (this.gate) throw new Error("--interactive supports adapter flows only, not script or message flows yet");
 
     if (infra) {
       throw new Error("--infra is currently only supported with tsAdapter flows");
@@ -1037,11 +1160,38 @@ Examples:
       let lastExitCode = 0;
       const outerScope: ExecScope = { stopped: false, sink: flowResult.assertions, stdoutBase: 0 };
 
+      let evidenceDir: string | null = null;
       const processStep = async (step: ParsedStep, scope: ExecScope): Promise<void> => {
-        if (step.type === "picture" || step.type === "video") {
+        if (step.type === "video") {
+          // The page belongs to the adapter, not the engine: the adapter of
+          // the block's steps records it, around those steps.
+          const name = step.name ?? "video";
+          const adapterName = (step.children ?? []).map((c) => this.adapterForStep(c)).find(Boolean);
+          const adapter = adapterName && hasFlowAdapter(adapterName) ? await flowAdapter(adapterName) : undefined;
+          if (!adapter?.videoStart || !adapter.videoStop) {
+            throw new Error(
+              `<video name="${name}">: adapter '${adapterName ?? "(none)"}' cannot record video — ` +
+                `it needs videoStart/videoStop, or use a browser orchestrator (tsAdapter)`,
+            );
+          }
+          evidenceDir ??= evidenceDirFor(this._resolvedFilePath!, flow.name);
+          const ctx = this.makeAdapterCtx(flow, step, env, { result: flowResult, scenario: flow.scenarios[0] });
+          await adapter.videoStart(name, evidenceDir, ctx);
+          try {
+            for (const child of step.children ?? []) {
+              if (scope.stopped) break;
+              await processStep(child, scope);
+            }
+          } finally {
+            const path = await adapter.videoStop(name, ctx);
+            if (typeof path === "string") (flowResult.evidence ??= []).push({ kind: "video", name, path });
+          }
+          return;
+        }
+        if (step.type === "picture") {
           throw new Error(
-            `<${step.type}> evidence requires a browser orchestrator (tsAdapter) — ` +
-              `adapter '${step.adapter ?? "custom"}' steps cannot capture evidence`
+            `<picture> evidence requires a browser orchestrator (tsAdapter) — ` +
+              `adapter '${step.adapter ?? "custom"}' steps cannot capture pictures yet`
           );
         }
         if (step.type === "extract") {
@@ -1115,12 +1265,105 @@ Examples:
             if (!result.passed) scope.stopped = true;
           }
           scope.cursor = allStdout.length;
+        } else {
+          // Never drop a step: a silently skipped step makes the flow (and
+          // any <repeat> around it) report green without having run it.
+          const label = stepLabel(step);
+          throw new Error(
+            `step '${label}' has no adapter that can run it in this adapter flow` +
+              (step.adapter ? ` (adapter="${step.adapter}")` : "") +
+              ` — set adapter="…" on it, or <flow adapter="…">`,
+          );
         }
       };
 
-      for (const step of flow.steps) {
+      const gate = this.gate;
+      const observer = this.observer;
+      // A visible or attached browser already shows the product; framing it
+      // too would show a second, unrelated session.
+      let productWindow = false;
+      try {
+        const browser = browserSettings(env);
+        productWindow = browser.headed || !!browser.attach;
+      } catch {
+        // Invalid browser settings fail in the step that launches a browser.
+      }
+      this.productWindow = productWindow;
+      observer?.begin(
+        flow.name,
+        flow.steps.flatMap((step, index) =>
+          step.type === "assertions"
+            ? []
+            : [{
+                index,
+                label: stepLabel(step),
+                ...(step.args && Object.keys(step.args).length ? { args: step.args } : {}),
+                ...(step.value?.trim() ? { text: step.value.trim() } : {}),
+                ...(step.args?.interactive === "auto" ? { auto: true } : {}),
+              }]),
+        productWindow,
+      );
+      // One attempt at a top-level step as the stage sees it: running, its
+      // output tied to it, then how it ended.
+      const observed = async (index: number, step: ParsedStep, scope: ExecScope): Promise<void> => {
+        if (!observer || step.type === "assertions") return processStep(step, scope);
+        const from = allStdout.length;
+        this.liveStep = index;
+        observer.stepStarted(index);
+        try {
+          await processStep(step, scope);
+        } catch (err) {
+          observer.stepEnded(index, "failed", err instanceof Error ? err.message : String(err));
+          throw err;
+        } finally {
+          for (const line of allStdout.slice(from).split("\n")) if (line.trim()) observer.output(index, line);
+          this.liveStep = null;
+        }
+        if (scope.stopped) {
+          observer.stepEnded(index, "failed", this.scopeFailureWhy(scope));
+        } else {
+          observer.stepEnded(index, "passed");
+          if (this.pendingProduct) observer.product(this.pendingProduct);
+          this.pendingProduct = null;
+        }
+      };
+
+      await this.startAdapters(flow, env);
+
+      for (const [index, step] of flow.steps.entries()) {
         if (outerScope.stopped) break;
-        await processStep(step, outerScope);
+        if (!gate || step.type === "assertions" || step.args?.interactive === "auto") {
+          await observed(index, step, outerScope);
+          continue;
+        }
+        // Gated step: a failure stops at the gate for retry/skip instead of
+        // ending the run. A failed attempt is rolled back (its output and
+        // assertion results), so a retry is judged on its own output only.
+        const record: InteractiveStepRecord = { index, label: stepLabel(step), outcome: "ran", failedAttempts: [] };
+        (flowResult.interactive ??= []).push(record);
+        for (;;) {
+          const failed = record.failedAttempts.at(-1);
+          const cmd = await gate.wait({ index, total: flow.steps.length, label: record.label, step, failed });
+          if (cmd === "abort") throw new Error(`interactive run aborted at step ${index + 1} (${record.label})`);
+          if (cmd === "skip") {
+            record.outcome = "skipped";
+            observer?.stepEnded(index, "skipped");
+            break;
+          }
+          const mark = { out: allStdout.length, sink: outerScope.sink.length };
+          let why: string | undefined;
+          try {
+            await observed(index, step, outerScope);
+            if (outerScope.stopped) why = this.scopeFailureWhy({ ...outerScope, sink: outerScope.sink.slice(mark.sink) });
+          } catch (err) {
+            why = err instanceof Error ? err.message : String(err);
+          }
+          if (why === undefined) break;
+          record.failedAttempts.push(why);
+          allStdout = allStdout.slice(0, mark.out);
+          outerScope.sink.length = mark.sink;
+          outerScope.stopped = false;
+        }
       }
 
       flowResult.response = allStdout;
@@ -1643,6 +1886,9 @@ Examples:
   /** Progress output that --quiet suppresses. */
   private progress(message: string): void {
     if (!this.quietMode) console.log(message);
+    if (this.observer && this.liveStep !== null) {
+      this.observer.output(this.liveStep, message.replace(/\x1b\[[0-9;]*m/g, "").trim());
+    }
   }
 
   /** --report: write an additional machine-readable report at the
@@ -1802,6 +2048,32 @@ Examples:
     return flowAdaptersForTag(step.type)[0]?.name ?? null;
   }
 
+  /** Calls `start` once on every plugin adapter the flow's steps use, in
+   * first-use order, before any step (and so before any scenario) runs. */
+  private async startAdapters(flow: ParsedFlow, env: Record<string, string>): Promise<void> {
+    const firstStep = new Map<string, ParsedStep>();
+    const walk = (steps: ParsedStep[]) => {
+      for (const step of steps) {
+        const name = this.adapterForStep(step);
+        if (name && hasFlowAdapter(name) && !firstStep.has(name)) firstStep.set(name, step);
+        walk(step.children ?? []);
+      }
+    };
+    walk(flow.steps);
+    for (const [name, step] of firstStep) {
+      const adapter = await flowAdapter(name);
+      await adapter.start?.(this.makeAdapterCtx(flow, step, env, { scenario: flow.scenarios[0] }));
+    }
+  }
+
+  /** Teardown errors are warnings: the flow's own result already stands. */
+  private async disposeAdapters(flow: ParsedFlow | null): Promise<void> {
+    const env = this.expandEnvVars({ ...(process.env as Record<string, string>), ...(flow?.env ?? {}) });
+    const errors = await disposeFlowAdapters(() =>
+      this.makeAdapterCtx(flow, { type: "dispose" } as ParsedStep, env));
+    for (const err of errors) console.error(`\x1b[33mWarning: ${err.message}\x1b[0m`);
+  }
+
   /** Build the context handed to a plugin adapter. */
   private makeAdapterCtx(
     flow: ParsedFlow | null,
@@ -1858,10 +2130,11 @@ Examples:
     // Registered plugin adapters run in-process.
     if (hasFlowAdapter(name)) {
       this.progress(`    Adapter '${name}' resolved via plugin registry`);
+      const { scenario, baseUrl, env: stepEnv } = await this.adapterScenario(flow, name, env);
       const adapter = await flowAdapter(name);
       const out = await adapter.run(
         expandedStep as FlowAdapterStep,
-        this.makeAdapterCtx(flow, expandedStep, env, { result })
+        this.makeAdapterCtx(flow, expandedStep, stepEnv, { result, scenario, baseUrl })
       );
       return typeof out === "string" ? out : "";
     }
@@ -1875,6 +2148,31 @@ Examples:
       throw new Error(`External adapter '${name}' exited with ${exitCode}: ${stderr || stdout}`);
     }
     return stdout;
+  }
+
+  /** For an adapter declaring wantsScenario: the flow's first scenario,
+   * started and ready, with its base URL — the same engine-side lifecycle
+   * message adapters get. Deployment targets keep their own BASE_URL. */
+  private async adapterScenario(
+    flow: ParsedFlow | null,
+    adapterName: string,
+    env: Record<string, string>,
+  ): Promise<{ scenario?: ParsedScenario; baseUrl?: string; env: Record<string, string> }> {
+    const scenario = flow?.scenarios[0];
+    const run = this.adapterScenarioRun;
+    const wants = flowAdapterSpecs().find((s) => s.name === adapterName)?.wantsScenario;
+    if (!flow || !scenario || !run || !wants || this.deploymentUrl(scenario, flow, null)) {
+      return { scenario, env };
+    }
+    let prepared = run.prepared.get(scenario.name);
+    if (!prepared) {
+      const p = await this.prepareScenario(scenario, flow, run.started, run.autoPort, run.portFlag);
+      await this.waitForReadiness(scenario, p.scenarioPath, p.env, p.endpoints);
+      prepared = { baseUrl: p.baseUrl, env: p.env };
+      run.prepared.set(scenario.name, prepared);
+    }
+    if (prepared.baseUrl && this.observer && !this.productWindow) this.pendingProduct = prepared.baseUrl;
+    return { scenario, baseUrl: prepared.baseUrl, env: { ...env, ...prepared.env } };
   }
 
   private async runExternalAdapter(

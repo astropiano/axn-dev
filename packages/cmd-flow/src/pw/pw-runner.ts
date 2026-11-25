@@ -4,6 +4,7 @@
 // (the spec engine is pw-spec.ts). Enabled via `axn-dev flow --runner pw`
 // or AXN_FLOW_RUNNER=pw.
 
+import { browserSettings } from "@axn-dev/core";
 import { createRequire } from "node:module";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -119,9 +120,21 @@ export async function runFlowWithPlaywright(opts: {
 
   const enginePath = fileURLToPath(new URL("./pw-spec.js", import.meta.url));
   writeFileSync(join(runDir, "flow.spec.js"), `import ${JSON.stringify(pathToFileURL(enginePath).href)};\n`);
+  const browser = browserSettings(env);
+  if (browser.attach) {
+    throw new Error("AXN_DEV_BROWSER_ATTACH is not supported with runner=\"pw\": Playwright Test launches its own browser");
+  }
+  const use = {
+    browserName: browser.engine,
+    ...(browser.channel ? { channel: browser.channel } : {}),
+    headless: !browser.headed,
+    viewport: { width: 1280, height: 720 },
+    actionTimeout: 30000,
+    navigationTimeout: 30000,
+  };
   writeFileSync(
     join(runDir, "playwright.config.mjs"),
-    `export default { testDir: '.', timeout: 600000, reporter: [['json', { outputFile: 'result.json' }], ['list']], use: { headless: true, viewport: { width: 1280, height: 720 }, actionTimeout: 30000, navigationTimeout: 30000 } };\n`
+    `export default { testDir: '.', timeout: 600000, reporter: [['json', { outputFile: 'result.json' }], ['list']], use: ${JSON.stringify(use)} };\n`
   );
 
   const resultFile = join(runDir, "result.json");
