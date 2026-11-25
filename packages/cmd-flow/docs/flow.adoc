@@ -455,8 +455,12 @@ checks are:
 
 `<picture>` and `<video>` are inline step units — like `<assertions>` they can
 sit anywhere between steps and capture evidence at that point in the run.
-Both require an orchestrator-driven `tsAdapter` flow (a browser must exist);
-on other adapters the run fails with an error.
+Both work in an orchestrator-driven `tsAdapter` flow (a browser must exist).
+In an adapter flow, `<video>` works when the adapter of the steps inside it
+records video (`videoStart`/`videoStop`, see `docs/plugins.adoc`); the file
+lands in the same evidence folder and the report's `evidence[]`. `<picture>`
+in an adapter flow, or `<video>` with an adapter that cannot record, fails the
+run with an error.
 
 [source,xml]
 ----

@@ -836,10 +836,11 @@ Examples:
         !!s.adapter &&
         s.adapter !== "tsAdapter" &&
         !this.servesMessage(s.adapter)) ||
-      // custom step tags dispatch to the adapter owning the tag; <repeat>
-      // and <metric> are containers — their children are checked
-      // individually
-      (s.type !== "script" && s.type !== "message" && s.type !== "assertions" && s.type !== "repeat" && s.type !== "extract" && s.type !== "metric");
+      // custom step tags dispatch to the adapter owning the tag; <repeat>,
+      // <metric> and <video> are containers — their children are checked
+      // individually; a <picture> alone needs an orchestrator
+      (s.type !== "script" && s.type !== "message" && s.type !== "assertions" && s.type !== "repeat" &&
+        s.type !== "extract" && s.type !== "metric" && s.type !== "video" && s.type !== "picture");
     const anyCustomUnit = (steps: ParsedStep[]): boolean =>
       steps.some((s) => isCustomUnit(s) || anyCustomUnit(s.children ?? []));
     const hasCustomAdapterStep = anyCustomUnit(flow.steps);
@@ -1158,11 +1159,38 @@ Examples:
       let lastExitCode = 0;
       const outerScope: ExecScope = { stopped: false, sink: flowResult.assertions, stdoutBase: 0 };
 
+      let evidenceDir: string | null = null;
       const processStep = async (step: ParsedStep, scope: ExecScope): Promise<void> => {
-        if (step.type === "picture" || step.type === "video") {
+        if (step.type === "video") {
+          // The page belongs to the adapter, not the engine: the adapter of
+          // the block's steps records it, around those steps.
+          const name = step.name ?? "video";
+          const adapterName = (step.children ?? []).map((c) => this.adapterForStep(c)).find(Boolean);
+          const adapter = adapterName && hasFlowAdapter(adapterName) ? await flowAdapter(adapterName) : undefined;
+          if (!adapter?.videoStart || !adapter.videoStop) {
+            throw new Error(
+              `<video name="${name}">: adapter '${adapterName ?? "(none)"}' cannot record video — ` +
+                `it needs videoStart/videoStop, or use a browser orchestrator (tsAdapter)`,
+            );
+          }
+          evidenceDir ??= evidenceDirFor(this._resolvedFilePath!, flow.name);
+          const ctx = this.makeAdapterCtx(flow, step, env, { result: flowResult, scenario: flow.scenarios[0] });
+          await adapter.videoStart(name, evidenceDir, ctx);
+          try {
+            for (const child of step.children ?? []) {
+              if (scope.stopped) break;
+              await processStep(child, scope);
+            }
+          } finally {
+            const path = await adapter.videoStop(name, ctx);
+            if (typeof path === "string") (flowResult.evidence ??= []).push({ kind: "video", name, path });
+          }
+          return;
+        }
+        if (step.type === "picture") {
           throw new Error(
-            `<${step.type}> evidence requires a browser orchestrator (tsAdapter) — ` +
-              `adapter '${step.adapter ?? "custom"}' steps cannot capture evidence`
+            `<picture> evidence requires a browser orchestrator (tsAdapter) — ` +
+              `adapter '${step.adapter ?? "custom"}' steps cannot capture pictures yet`
           );
         }
         if (step.type === "extract") {

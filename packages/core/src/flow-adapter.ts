@@ -107,6 +107,13 @@ export interface FlowAdapter {
    * starts the flow's scenario (so without baseUrl) — e.g. to open the window
    * the audience watches while the product boots. A throw fails the flow. */
   start?(ctx: FlowAdapterContext): Promise<void> | void;
+  /** `<video name>` in an adapter flow: start recording what this adapter
+   * shows (ideally in place, so page state carries across the segment) into
+   * `dir`. The adapter of the block's steps records it; without these two
+   * methods a `<video>` there fails the flow. */
+  videoStart?(name: string, dir: string, ctx: FlowAdapterContext): Promise<void> | void;
+  /** Stop the recording `videoStart` began; returns the file it wrote. */
+  videoStop?(name: string, ctx: FlowAdapterContext): Promise<string | void> | string | void;
   /** Releases what run() opened (browsers, sessions, child processes).
    * Called once per flow after its last step — also when a step failed or
    * the run was interrupted — after which the instance is dropped, so an
