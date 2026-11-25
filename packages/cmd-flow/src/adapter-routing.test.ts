@@ -38,6 +38,34 @@ beforeAll(() => {
 });
 afterAll(() => rmSync(TMP, { recursive: true, force: true }));
 
+describe("adapter flows against a deployment", () => {
+  it("runs a scenario-less base-url flow of plugin-adapter steps on the adapter path, with BASE_URL", async () => {
+    // A <video> only the adapter path can record: the browser path would
+    // reject it for lack of an orchestrator.
+    let baseUrl: string | undefined;
+    registerFlowAdapter({
+      name: "deploy-rec",
+      tags: [],
+      load: () => ({
+        run: (_step, ctx) => {
+          baseUrl = ctx.env.BASE_URL;
+          return "ok";
+        },
+        videoStart: () => {},
+        videoStop: () => undefined,
+      }),
+    });
+    const file = writeFlow(
+      "deploy.xml",
+      `base-url="http://127.0.0.1:9"`,
+      `<video name="v"><step adapter="deploy-rec" do="x"/></video>`,
+    );
+    await new FlowCommand().execute(["-f", file]);
+    expect(latestFlow().passed).toBe(true);
+    expect(baseUrl).toBe("http://127.0.0.1:9");
+  });
+});
+
 describe("adapter flows — every step runs or the flow fails", () => {
   it("fails, naming the step, when a nested step has no runner", async () => {
     calls.length = 0;

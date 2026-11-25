@@ -817,19 +817,6 @@ Examples:
     portFlag: number | null = null,
     deployUrl: string | null = null
   ): Promise<FlowResult[]> {
-    // Scenario-less flow with an explicit deployment target — a synthetic
-    // tsAdapter scenario carries the URL; orchestrator/readiness can come
-    // from the <flow> attributes.
-    const tsScenario =
-      flow.scenarios.find((s) => s.adapter === "tsAdapter") ??
-      (flow.scenarios.length === 0 && (deployUrl ?? flow.baseUrl)
-        ? { name: "deployment", service: "", adapter: "tsAdapter", readiness: [] }
-        : undefined);
-    if (tsScenario) {
-      if (this.gate) throw new Error("--interactive supports adapter flows only, not browser flows yet");
-      return [await this.runTsAdapterFlow(flow, tsScenario, startedScenarios, infra, autoPort, portFlag, deployUrl)];
-    }
-
     const isCustomUnit = (s: ParsedStep) =>
       // <script adapter="x"> routed to a non-message adapter (plugin or file)
       (s.type === "script" &&
@@ -844,6 +831,20 @@ Examples:
     const anyCustomUnit = (steps: ParsedStep[]): boolean =>
       steps.some((s) => isCustomUnit(s) || anyCustomUnit(s.children ?? []));
     const hasCustomAdapterStep = anyCustomUnit(flow.steps);
+    // Scenario-less flow with an explicit deployment target — a synthetic
+    // tsAdapter scenario carries the URL; orchestrator/readiness can come
+    // from the <flow> attributes. Not for a flow of plugin-adapter steps:
+    // the adapter path below resolves the deployment URL itself.
+    const tsScenario =
+      flow.scenarios.find((s) => s.adapter === "tsAdapter") ??
+      (flow.scenarios.length === 0 && !hasCustomAdapterStep && (deployUrl ?? flow.baseUrl)
+        ? { name: "deployment", service: "", adapter: "tsAdapter", readiness: [] }
+        : undefined);
+    if (tsScenario) {
+      if (this.gate) throw new Error("--interactive supports adapter flows only, not browser flows yet");
+      return [await this.runTsAdapterFlow(flow, tsScenario, startedScenarios, infra, autoPort, portFlag, deployUrl)];
+    }
+
     if (hasCustomAdapterStep) {
       // Custom-adapter steps get BASE_URL when the run targets a deployment.
       // The stub lookup also resolves a scenario-less <flow base-url>.
