@@ -721,9 +721,9 @@ Examples:
       // and <metric> are containers — their children are checked
       // individually
       (s.type !== "script" && s.type !== "message" && s.type !== "assertions" && s.type !== "repeat" && s.type !== "extract" && s.type !== "metric");
-    const hasCustomAdapterStep = flow.steps.some(
-      (s) => isCustomUnit(s) || (s.children ?? []).some(isCustomUnit)
-    );
+    const anyCustomUnit = (steps: ParsedStep[]): boolean =>
+      steps.some((s) => isCustomUnit(s) || anyCustomUnit(s.children ?? []));
+    const hasCustomAdapterStep = anyCustomUnit(flow.steps);
     if (hasCustomAdapterStep) {
       // Custom-adapter steps get BASE_URL when the run targets a deployment.
       // The stub lookup also resolves a scenario-less <flow base-url>.
@@ -1115,6 +1115,17 @@ Examples:
             if (!result.passed) scope.stopped = true;
           }
           scope.cursor = allStdout.length;
+        } else {
+          // Never drop a step: a silently skipped step makes the flow (and
+          // any <repeat> around it) report green without having run it.
+          const label =
+            step.description ?? step.name ?? step.args?.name ?? step.src ??
+            (step.value?.trim().split("\n")[0].slice(0, 60) || `<${step.type}>`);
+          throw new Error(
+            `step '${label}' has no adapter that can run it in this adapter flow` +
+              (step.adapter ? ` (adapter="${step.adapter}")` : "") +
+              ` — set adapter="…" on it, or <flow adapter="…">`,
+          );
         }
       };
 

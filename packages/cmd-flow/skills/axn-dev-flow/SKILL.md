@@ -112,7 +112,7 @@ Feature: example - how late is it
 
 ### Elements
 
-`<flow name="..." orchestrator="..." adapter="..." base-url="...">`:: A single test flow. `orchestrator` points to a TypeScript orchestrator script (see below). `adapter` is the *default step adapter* — `<step>`/`<script>` units without their own `adapter=` use it — e.g. `<flow adapter="axn-term">` lets a flow of adapter steps omit `adapter=` on every step; it does **not** affect `<usermessage>` or custom tags. `base-url` is the *default deployment URL* — a scenario-less flow pointing at an already-running deployment (k8s, staging…); `url=` on a `<scenario>` and `--base-url` take precedence.
+`<flow name="..." orchestrator="..." adapter="..." base-url="...">`:: A single test flow. `orchestrator` points to a TypeScript orchestrator script (see below). `adapter` is the *default step adapter* — `<step>`/`<script>` units without their own `adapter=` use it, also inside `<repeat>`, `<metric>` and `<video>` — e.g. `<flow adapter="axn-term">` lets a flow of adapter steps omit `adapter=` on every step; it does **not** affect `<usermessage>` or custom tags. In an adapter flow, a step no adapter can run fails the flow, naming the step; it is never skipped. `base-url` is the *default deployment URL* — a scenario-less flow pointing at an already-running deployment (k8s, staging…); `url=` on a `<scenario>` and `--base-url` take precedence.
 
 `<scenarios>`:: One or more `<scenario>` elements to start and test against.
 

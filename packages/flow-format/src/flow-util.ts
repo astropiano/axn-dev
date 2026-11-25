@@ -922,14 +922,18 @@ export function loadFlowsFromFile(filePath: string): ParsedFlow[] {
     const includeSpecs = collectStepIncludes(parsed, f, orderedDoc, i);
     flow.steps = expandStepRefs(flow.steps, flowDir, includeSpecs);
     // <flow adapter="x"> — default step adapter: adapter-less script steps
-    // use it. Scenario adapters are unaffected — they govern <usermessage>
-    // routing and scenario lifecycle, not step dispatch.
+    // use it, including those inside <repeat>/<metric>/<video>, which would
+    // otherwise have no runner in an adapter flow. Scenario adapters are
+    // unaffected — they govern <usermessage> routing and scenario
+    // lifecycle, not step dispatch.
     if (flow.adapter) {
-      flow.steps = flow.steps.map((s) =>
-        s.type === "script" && !s.adapter && !stepRefOf(s)
-          ? { ...s, adapter: flow.adapter }
-          : s,
-      );
+      const adapter = flow.adapter;
+      const withDefault = (steps: ParsedStep[]): ParsedStep[] =>
+        steps.map((s) => {
+          const own = s.type === "script" && !s.adapter && !stepRefOf(s) ? { ...s, adapter } : s;
+          return own.children ? { ...own, children: withDefault(own.children) } : own;
+        });
+      flow.steps = withDefault(flow.steps);
     }
     validateFlow(flow);
     return flow;
