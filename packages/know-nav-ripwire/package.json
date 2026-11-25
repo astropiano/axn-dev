@@ -20,7 +20,7 @@
     "codeNavigators": [
       {
         "name": "ripwire",
-        "extensions": [".java", ".kt", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs", ".cs", ".rb", ".php", ".swift", ".c", ".cc", ".cpp", ".h", ".hpp"]
+        "extensions": [ ".java", ".kt", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs", ".cs", ".rb", ".php", ".swift", ".c", ".cc", ".cpp", ".h", ".hpp"]
       }
     ]
   },
@@ -38,5 +38,12 @@
   "private": false,
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astropiano/axn-dev.git",
+    "directory": "packages/know-nav-ripwire"
+  },
+  "homepage": "https://github.com/astropiano/axn-dev/tree/main/packages/know-nav-ripwire#readme",
+  "bugs": "https://github.com/astropiano/axn-dev/issues"
 }

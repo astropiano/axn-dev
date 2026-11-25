@@ -1,7 +1,7 @@
 {
   "name": "@axn-dev/core",
   "version": "0.1.0",
-  "description": "Axn-dev core library \u2014 command interface, registry, plugin loader, scenario/workspace utilities",
+  "description": "Axn-dev core library — command interface, registry, plugin loader, scenario/workspace utilities",
   "type": "module",
   "exports": {
     ".": {
@@ -28,5 +28,12 @@
   "private": false,
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astropiano/axn-dev.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/astropiano/axn-dev/tree/main/packages/core#readme",
+  "bugs": "https://github.com/astropiano/axn-dev/issues"
 }

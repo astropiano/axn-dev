@@ -1,7 +1,7 @@
 {
   "name": "@axn-dev/cli",
   "version": "0.1.0",
-  "description": "axn-dev \u2014 modular development CLI (repos, scenarios, plugins)",
+  "description": "axn-dev — modular development CLI (repos, scenarios, plugins)",
   "type": "module",
   "bin": {
     "axn-dev": "./dist/main.js"
@@ -34,5 +34,15 @@
   "private": false,
   "publishConfig": {
     "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astropiano/axn-dev.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/astropiano/axn-dev/tree/main/packages/cli#readme",
+  "bugs": "https://github.com/astropiano/axn-dev/issues",
+  "engines": {
+    "node": ">=18"
   }
 }

@@ -1,7 +1,7 @@
 {
   "name": "@axn-dev/adapter-keycloak",
   "version": "0.1.0",
-  "description": "axn-dev flow adapter: keycloak \u2014 create/delete/reset Keycloak users in flow steps",
+  "description": "axn-dev flow adapter: keycloak — create/delete/reset Keycloak users in flow steps",
   "type": "module",
   "exports": {
     ".": {
@@ -40,5 +40,12 @@
   "private": false,
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astropiano/axn-dev.git",
+    "directory": "packages/adapter-keycloak"
+  },
+  "homepage": "https://github.com/astropiano/axn-dev/tree/main/packages/adapter-keycloak#readme",
+  "bugs": "https://github.com/astropiano/axn-dev/issues"
 }

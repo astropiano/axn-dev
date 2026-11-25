@@ -1,7 +1,7 @@
 {
   "name": "@axn-dev/cmd-flow",
   "version": "0.1.0",
-  "description": "axn-dev flow command \u2014 XML-defined flow tests against scenarios",
+  "description": "axn-dev flow command — XML-defined flow tests against scenarios",
   "type": "module",
   "exports": {
     ".": {
@@ -93,5 +93,12 @@
   "private": false,
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astropiano/axn-dev.git",
+    "directory": "packages/cmd-flow"
+  },
+  "homepage": "https://github.com/astropiano/axn-dev/tree/main/packages/cmd-flow#readme",
+  "bugs": "https://github.com/astropiano/axn-dev/issues"
 }

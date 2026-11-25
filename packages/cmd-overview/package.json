@@ -1,7 +1,7 @@
 {
   "name": "@axn-dev/cmd-overview",
   "version": "0.1.0",
-  "description": "axn-dev overview command \u2014 machine-wide overview of open work across repos",
+  "description": "axn-dev overview command — machine-wide overview of open work across repos",
   "type": "module",
   "exports": {
     ".": {
@@ -54,5 +54,12 @@
   "private": false,
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astropiano/axn-dev.git",
+    "directory": "packages/cmd-overview"
+  },
+  "homepage": "https://github.com/astropiano/axn-dev/tree/main/packages/cmd-overview#readme",
+  "bugs": "https://github.com/astropiano/axn-dev/issues"
 }
