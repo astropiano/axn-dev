@@ -29,6 +29,9 @@ export interface InteractiveSnapshot {
   flowName: string;
   /** The system under demo, framed on the stage once the scenario is up. */
   productUrl?: string;
+  /** The product runs in a browser window of its own (a visible or attached
+   * browser): the stage shows the driver layout instead of a frame. */
+  productWindow?: boolean;
   steps: InteractiveStep[];
   gate: InteractiveGate | null;
   /** Output so far, oldest first, each line tied to its step. */
@@ -38,7 +41,7 @@ export interface InteractiveSnapshot {
 }
 
 export type InteractiveEvent =
-  | { type: "flow"; flowName: string; steps: InteractiveStep[] }
+  | { type: "flow"; flowName: string; steps: InteractiveStep[]; productWindow?: boolean }
   | { type: "gate"; gate: InteractiveGate }
   | { type: "step"; index: number; status: StepStatus; error?: string }
   | { type: "output"; index: number; line: string }

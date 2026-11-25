@@ -56,7 +56,7 @@ describe("createInteractiveHandler", () => {
     const { origin, server } = await serve(fakeSession(true));
     try {
       expect((await fetch(`${origin}/interactive/other`)).status).toBe(404);
-      expect((await fetch(`${origin}/interactive/r1/control`)).status).toBe(200);
+      expect((await fetch(`${origin}/interactive/r1/driver`)).status).toBe(200);
     } finally {
       server.close();
     }
@@ -65,9 +65,9 @@ describe("createInteractiveHandler", () => {
 
 describe("interactive pages", () => {
   it("render the shared page head and no colour of their own", () => {
-    for (const view of ["stage", "control"] as const) {
+    for (const view of ["stage", "driver"] as const) {
       const html = interactiveHtml("r1", view);
-      expect(html).toContain(pageHead(view === "stage" ? "axn-dev · interactive" : "axn-dev · interactive control"));
+      expect(html).toContain(pageHead(view === "stage" ? "axn-dev · interactive stage" : "axn-dev · interactive"));
       const own = html.slice(html.indexOf("</script>", html.indexOf("data-theme")));
       expect(own).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(/);
     }

@@ -30,7 +30,11 @@ export type ObservedStatus = "passed" | "failed" | "skipped";
 /** Follows an interactive run step by step, for controllers that show more
  * than the gate (the web stage). */
 export interface RunObserver {
-  begin(flowName: string, steps: { index: number; label: string; args?: Record<string, string>; text?: string; auto?: boolean }[]): void;
+  begin(
+    flowName: string,
+    steps: { index: number; label: string; args?: Record<string, string>; text?: string; auto?: boolean }[],
+    productWindow: boolean,
+  ): void;
   stepStarted(index: number): void;
   stepEnded(index: number, status: ObservedStatus, error?: string): void;
   output(index: number, line: string): void;

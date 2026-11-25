@@ -10,8 +10,8 @@ const MAX_BODY = 4096;
 /**
  * Serves one run's pages and API, for whichever host mounts it:
  *
- *   GET  /interactive/<runId>             the stage
- *   GET  /interactive/<runId>/control     the presenter's control view
+ *   GET  /interactive/<runId>             the stage (product framed)
+ *   GET  /interactive/<runId>/driver      the driver: steps, commands, output
  *   GET  /api/interactive/<runId>         snapshot (JSON)
  *   GET  /api/interactive/<runId>/events  event stream (SSE), opening with a snapshot
  *   POST /api/interactive/<runId>/command { "command": "next" | "skip" | "retry" | "abort" }
@@ -30,7 +30,7 @@ export function createInteractiveHandler(
     const method = req.method ?? "GET";
 
     if (method === "GET" && path === page) return html(res, interactiveHtml(session.runId, "stage"));
-    if (method === "GET" && path === `${page}/control`) return html(res, interactiveHtml(session.runId, "control"));
+    if (method === "GET" && path === `${page}/driver`) return html(res, interactiveHtml(session.runId, "driver"));
     if (method === "GET" && path === api) return json(res, 200, session.snapshot());
     if (method === "GET" && path === `${api}/events`) {
       res.writeHead(200, {

@@ -11,11 +11,13 @@ const TMP = join(tmpdir(), "axn-flow-interactive-ui-test-" + process.pid);
 const calls: string[] = [];
 let failuresLeft = 0;
 
-function writeFlow(name: string, inner: string): string {
+function writeFlow(name: string, inner: string, env: Record<string, string> = {}): string {
   const file = join(TMP, name);
+  const vars = Object.entries(env).map(([k, v]) => `<var name="${k}" value="${v}"/>`).join("");
   writeFileSync(
     file,
-    `<?xml version="1.0"?><flows><flow name="${name.replace(/\.xml$/, "")}" adapter="ui-rec"><steps>${inner}</steps></flow></flows>`,
+    `<?xml version="1.0"?><flows><flow name="${name.replace(/\.xml$/, "")}" adapter="ui-rec">` +
+      `${vars ? `<env>${vars}</env>` : ""}<steps>${inner}</steps></flow></flows>`,
   );
   return file;
 }
@@ -190,6 +192,35 @@ describe("--interactive-ui", () => {
     } finally {
       blocker.close();
     }
+  });
+});
+
+describe("product window", () => {
+  it("frames the product only when the browser is neither visible nor attached", async () => {
+    const cases: [Record<string, string>, boolean][] = [
+      [{}, true], // interactive: headed=auto shows a window
+      [{ AXN_DEV_BROWSER_HEADED: "false" }, false],
+      [{ AXN_DEV_BROWSER_HEADED: "false", AXN_DEV_BROWSER_ATTACH: "http://127.0.0.1:9222" }, true],
+    ];
+    for (const [env, window] of cases) {
+      const file = writeFlow("window.xml", `<step do="one"/>`, env);
+      const { api, settled } = await startRun(file);
+      const s = await atGate(api, 0);
+      expect(s.productWindow, JSON.stringify(env)).toBe(window);
+      await command(api, "next");
+      expect(await settled).toBe("ok");
+    }
+  });
+
+  it("sends / to the driver", async () => {
+    const file = writeFlow("root.xml", `<step do="one"/>`);
+    const { stage, api, settled } = await startRun(file);
+    await atGate(api, 0);
+    const res = await fetch(new URL("/", stage), { redirect: "manual" });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe(new URL(stage).pathname + "/driver");
+    await command(api, "next");
+    await settled;
   });
 });
 

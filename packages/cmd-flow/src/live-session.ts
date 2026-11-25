@@ -24,6 +24,7 @@ export class LiveSession implements InteractiveSession, StepGate, RunObserver {
   private gate: InteractiveGate | null = null;
   private lines: { index: number; line: string }[] = [];
   private productUrl?: string;
+  private productWindow = false;
   private done?: { passed: boolean };
   private pending: ((cmd: GateCommand) => void) | null = null;
   private readonly listeners = new Set<(event: InteractiveEvent) => void>();
@@ -33,6 +34,7 @@ export class LiveSession implements InteractiveSession, StepGate, RunObserver {
       runId: this.runId,
       flowName: this.flowName,
       productUrl: this.productUrl,
+      productWindow: this.productWindow,
       steps: this.steps,
       gate: this.gate,
       output: this.lines,
@@ -71,13 +73,15 @@ export class LiveSession implements InteractiveSession, StepGate, RunObserver {
     });
   }
 
-  begin(flowName: string, steps: Omit<InteractiveStep, "status">[]): void {
+  begin(flowName: string, steps: Omit<InteractiveStep, "status">[], productWindow: boolean): void {
     this.flowName = flowName;
+    this.productWindow = productWindow;
+    this.productUrl = undefined;
     this.steps = steps.map((s) => ({ ...s, status: "waiting" }));
     this.gate = null;
     this.lines = [];
     this.done = undefined;
-    this.emit({ type: "flow", flowName, steps: structuredClone(this.steps) });
+    this.emit({ type: "flow", flowName, steps: structuredClone(this.steps), productWindow });
   }
 
   stepStarted(index: number): void {

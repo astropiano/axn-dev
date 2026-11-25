@@ -15,6 +15,7 @@ import { getComposeProjectName, getServiceEndpoints, getRunningScenarioPort, isS
 import { loadWorkspaceConfig, parseYaml } from "@axn-dev/core";
 import {
   INTERACTIVE_ENV,
+  browserSettings,
   disposeFlowAdapters,
   flowAdapter,
   flowAdaptersForTag,
@@ -111,6 +112,8 @@ export class FlowCommand implements Command {
   /** Product URL waiting for its step to pass: "ready" can come before the
    * app answers, and a frame loaded then shows an error page for good. */
   private pendingProduct: string | null = null;
+  /** The product shows in a browser window of its own this flow. */
+  private productWindow = false;
   /** Adapter flows: scenario lifecycle for adapters declaring wantsScenario,
    * prepared once per scenario and reused by every later step. */
   private adapterScenarioRun: {
@@ -585,7 +588,7 @@ Examples:
       if (interactive) process.env[INTERACTIVE_ENV] = "1";
       if (liveSession) {
         host = await startInteractiveHost(liveSession, liveSessionPort);
-        console.log(`\nInteractive stage:   ${host.stageUrl}\nInteractive control: ${host.controlUrl}\n`);
+        console.log(`\nInteractive driver: ${host.driverUrl}\nInteractive stage:  ${host.stageUrl}\n`);
       }
       for (const flow of selectedFlows) {
         current = flow;
@@ -1247,6 +1250,16 @@ Examples:
 
       const gate = this.gate;
       const observer = this.observer;
+      // A visible or attached browser already shows the product; framing it
+      // too would show a second, unrelated session.
+      let productWindow = false;
+      try {
+        const browser = browserSettings(env);
+        productWindow = browser.headed || !!browser.attach;
+      } catch {
+        // Invalid browser settings fail in the step that launches a browser.
+      }
+      this.productWindow = productWindow;
       observer?.begin(
         flow.name,
         flow.steps.flatMap((step, index) =>
@@ -1259,6 +1272,7 @@ Examples:
                 ...(step.value?.trim() ? { text: step.value.trim() } : {}),
                 ...(step.args?.interactive === "auto" ? { auto: true } : {}),
               }]),
+        productWindow,
       );
       // One attempt at a top-level step as the stage sees it: running, its
       // output tied to it, then how it ended.
@@ -2108,7 +2122,7 @@ Examples:
       prepared = { baseUrl: p.baseUrl, env: p.env };
       run.prepared.set(scenario.name, prepared);
     }
-    if (prepared.baseUrl && this.observer) this.pendingProduct = prepared.baseUrl;
+    if (prepared.baseUrl && this.observer && !this.productWindow) this.pendingProduct = prepared.baseUrl;
     return { scenario, baseUrl: prepared.baseUrl, env: { ...env, ...prepared.env } };
   }
 

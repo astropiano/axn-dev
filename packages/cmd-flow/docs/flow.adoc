@@ -541,17 +541,25 @@ watch). The report gets `flows[].interactive`: per gated step its outcome
 Without a TTY on stdin the run fails before its first step. Adapter flows
 only for now; browser, script and message flows are rejected.
 
-==== The web stage (`--interactive-ui [port]`)
+==== The driver page (`--interactive-ui [port]`)
 
 `--interactive-ui` implies `--interactive` and serves the run on
-`127.0.0.1` for as long as the flow runs, printing two URLs:
+`127.0.0.1` for as long as the flow runs. Open `http://127.0.0.1:<port>/` in
+any browser: it always lands on the current run's driver, so the address
+stays the same from run to run.
 
-* `/interactive/<runId>` — the **stage** for the audience screen: the step
-  rail with each step's status, the product (the scenario's URL, framed once
-  the step that brought it up has passed), and a control strip with the next
-  step, its arguments, Next / Retry / Skip and the running step's output.
-* `/interactive/<runId>/control` — the same run without the product frame,
-  for the presenter's laptop.
+* `/interactive/<runId>/driver` — the **driver**: the step rail with each
+  step's status, the run's output, and a strip with the next step, its
+  arguments and Next / Retry / Skip.
+* `/interactive/<runId>` — the **stage**: the same, with the product (the
+  scenario's URL) framed once the step that brought it up has passed.
+
+The product normally runs in a browser window of its own: interactive runs
+show the browser (`AXN_DEV_BROWSER_HEADED=auto`), or drive a Chrome you
+opened (`AXN_DEV_BROWSER_ATTACH`, see "Browser choice"). Then the stage shows
+the driver layout too, since a frame would only show a second, unrelated
+session. With `AXN_DEV_BROWSER_HEADED=false` and no attach, the stage frames
+the product.
 
 Keys on either page: →, PageDown or Space run the step (retry after a
 failure), `S` skips, `R` retries — a presentation clicker sends PageDown.

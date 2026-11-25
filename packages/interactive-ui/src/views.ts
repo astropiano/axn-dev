@@ -1,18 +1,20 @@
 import { pageHead } from "./head.js";
 
-export type InteractiveView = "stage" | "control";
+export type InteractiveView = "stage" | "driver";
 
 /**
- * The stage (audience screen: step rail, product frame, control strip) and
- * the control view (presenter laptop: steps and output, no product). Both
- * render from the run's event stream, which opens with a full snapshot, so a
- * reload mid-run loses nothing. No dashboard chrome and no link into it.
+ * The driver (steps, Next/Skip/Retry, live output) and the stage (the same
+ * with the product framed). The stage falls back to the driver layout when
+ * the product runs in its own browser window, where a frame would only show
+ * a second, unrelated session. Both render from the run's event stream, which
+ * opens with a full snapshot, so a reload mid-run loses nothing. No dashboard
+ * chrome and no link into it.
  */
 export function interactiveHtml(runId: string, view: InteractiveView): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-  ${pageHead(view === "stage" ? "axn-dev · interactive" : "axn-dev · interactive control")}
+  ${pageHead(view === "stage" ? "axn-dev · interactive stage" : "axn-dev · interactive")}
   <style>${styles}</style>
 </head>
 <body class="view-${view}">
@@ -21,9 +23,7 @@ export function interactiveHtml(runId: string, view: InteractiveView): string {
     <ol class="steps" id="steps"></ol>
     <div class="conn" id="conn"></div>
   </aside>
-  ${view === "stage"
-    ? `<main class="product" id="product"><div class="product-empty">The product appears here once the scenario is up.</div></main>`
-    : `<main class="log" id="log"></main>`}
+  <main id="main"></main>
   <footer class="strip">
     <div class="next">
       <div class="next-head"><span class="badge" id="badge"></span><span class="next-label" id="next-label"></span></div>
@@ -36,7 +36,7 @@ export function interactiveHtml(runId: string, view: InteractiveView): string {
       <button type="button" id="btn-retry" data-cmd="retry" title="R">Retry</button>
       <button type="button" id="btn-skip" data-cmd="skip" title="S">Skip</button>
     </div>
-    ${view === "stage" ? `<pre class="output" id="output"></pre>` : ""}
+    <pre class="output" id="output"></pre>
   </footer>
   <script>
     const RUN = ${JSON.stringify(runId)};
@@ -72,10 +72,11 @@ const styles = `
   .steps li.current { background: var(--surface-solid); color: var(--text); outline: 1px solid var(--accent); }
   .steps li.auto { font-style: italic; }
   .conn { font-size: 12px; color: var(--text-muted); }
-  .product { grid-area: main; display: flex; }
+  main { grid-area: main; min-height: 0; }
+  .product { display: flex; }
   .product iframe { flex: 1; border: 0; background: var(--surface-solid); }
   .product-empty, .log-empty { margin: auto; color: var(--text-muted); }
-  .log { grid-area: main; overflow-y: auto; padding: 16px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .log { overflow-y: auto; padding: 16px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
   .log .line { white-space: pre-wrap; }
   .log .line .idx { color: var(--text-muted); margin-right: 8px; }
   .strip { grid-area: strip; border-top: 1px solid var(--border); background: var(--surface); padding: 12px 16px; display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; }
@@ -91,8 +92,7 @@ const styles = `
   .buttons button#btn-next, .buttons button#btn-retry { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
   .buttons button:disabled { opacity: 0.35; cursor: default; }
   .output { grid-column: 1 / -1; font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--text-muted); max-height: 120px; overflow-y: auto; white-space: pre-wrap; }
-  .output:empty { display: none; }
-  body.view-control { grid-template-columns: 320px 1fr; }
+  .output:empty, .output.off { display: none; }
 `;
 
 const clientScript = `
@@ -111,6 +111,7 @@ const clientScript = `
     switch (ev.type) {
       case 'flow':
         state.flowName = ev.flowName; state.steps = ev.steps; state.output = [];
+        state.productWindow = ev.productWindow; state.productUrl = undefined;
         state.gate = null; state.finished = undefined; break;
       case 'gate': state.gate = ev.gate; break;
       case 'step': {
@@ -164,28 +165,41 @@ const clientScript = `
     $('btn-retry').disabled = !failed;
     $('btn-skip').disabled = !atGate;
 
-    if (VIEW === 'stage') {
-      if (state.productUrl && framed !== state.productUrl) {
+    // Frame the product only on the stage, and only when it is not already
+    // in a browser window of its own.
+    const framing = VIEW === 'stage' && !state.productWindow;
+    const main = $('main');
+    const out = $('output');
+    out.classList.toggle('off', !framing);
+    if (framing) {
+      main.className = 'product';
+      if (!state.productUrl) {
+        if (framed !== '') {
+          framed = '';
+          main.replaceChildren(el('div', 'product-empty', 'The product appears here once the scenario is up.'));
+        }
+      } else if (framed !== state.productUrl) {
         framed = state.productUrl;
         const frame = el('iframe');
         frame.src = state.productUrl;
-        $('product').replaceChildren(frame);
+        main.replaceChildren(frame);
       }
       const lines = state.output.filter((o) => o.index === cur).slice(-50).map((o) => o.line);
-      const out = $('output');
       out.textContent = lines.join('\\n');
       out.scrollTop = out.scrollHeight;
     } else {
-      const log = $('log');
+      framed = null;
+      main.className = 'log';
       if (!state.output.length) {
-        log.replaceChildren(el('div', 'log-empty', 'No output yet.'));
+        main.replaceChildren(el('div', 'log-empty',
+          state.productWindow ? 'The product runs in its own browser window. Output appears here.' : 'No output yet.'));
       } else {
-        log.replaceChildren(...state.output.map((o) => {
+        main.replaceChildren(...state.output.map((o) => {
           const d = el('div', 'line');
           d.append(el('span', 'idx', String(o.index + 1)), document.createTextNode(o.line));
           return d;
         }));
-        log.scrollTop = log.scrollHeight;
+        main.scrollTop = main.scrollHeight;
       }
     }
   }

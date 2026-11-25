@@ -3,7 +3,7 @@ import { createInteractiveHandler, type InteractiveSession } from "@axn-dev/inte
 
 export interface InteractiveHost {
   stageUrl: string;
-  controlUrl: string;
+  driverUrl: string;
   close(): Promise<void>;
 }
 
@@ -40,8 +40,9 @@ export async function startInteractiveHost(session: InteractiveSession, port: nu
   const server: Server = createServer((req, res) => {
     if (handle(req, res)) return;
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
+    // The address to open by hand: stable across runs, lands on the driver.
     if (req.method === "GET" && (path === "/" || path === "/interactive")) {
-      res.writeHead(302, { Location: stagePath });
+      res.writeHead(302, { Location: `${stagePath}/driver` });
       res.end();
       return;
     }
@@ -64,7 +65,7 @@ export async function startInteractiveHost(session: InteractiveSession, port: nu
   const origin = `http://127.0.0.1:${actual}`;
   return {
     stageUrl: `${origin}${stagePath}`,
-    controlUrl: `${origin}${stagePath}/control`,
+    driverUrl: `${origin}${stagePath}/driver`,
     close: () =>
       new Promise<void>((resolve) => {
         // Open event streams would hold close() forever.
