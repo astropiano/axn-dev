@@ -103,6 +103,11 @@ export interface FlowEmittedMetric {
 
 export interface FlowAdapter {
   run(step: FlowAdapterStep, ctx: FlowAdapterContext): Promise<string | void> | string | void;
+  /** Releases what run() opened (browsers, sessions, child processes).
+   * Called once per flow after its last step — also when a step failed or
+   * the run was interrupted — after which the instance is dropped, so an
+   * adapter never has to be reusable after teardown. */
+  dispose?(ctx: FlowAdapterContext): Promise<void> | void;
 }
 
 export type FlowAdapterFactory = (base?: FlowAdapter) => FlowAdapter | Promise<FlowAdapter>;
@@ -222,4 +227,25 @@ export async function flowAdapter(name: string): Promise<FlowAdapter> {
     instances.set(name, instance);
   }
   return instance;
+}
+
+/** Tears down every adapter instance loaded so far and forgets it, so the
+ * next flow gets fresh instances. Instances are taken out before any
+ * dispose runs, so a second concurrent call (signal + finally) finds none.
+ * One failing teardown does not stop the others; their errors are returned. */
+export async function disposeFlowAdapters(
+  ctx: (name: string) => FlowAdapterContext,
+): Promise<Error[]> {
+  const loaded = [...instances.entries()];
+  instances.clear();
+  const errors: Error[] = [];
+  for (const [name, pending] of loaded) {
+    const adapter = await pending.catch(() => undefined);
+    try {
+      await adapter?.dispose?.(ctx(name));
+    } catch (err) {
+      errors.push(new Error(`flow adapter '${name}' teardown failed: ${err instanceof Error ? err.message : err}`));
+    }
+  }
+  return errors;
 }

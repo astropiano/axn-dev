@@ -14,6 +14,7 @@ import { ScenarioDiscoveryService, resolveDeviceEnv } from "@axn-dev/core";
 import { getComposeProjectName, getServiceEndpoints, getRunningScenarioPort, isScenarioRunning, resolveEndpoints, substituteEnvVars, type ServiceEndpoint } from "@axn-dev/core";
 import { loadWorkspaceConfig, parseYaml } from "@axn-dev/core";
 import {
+  disposeFlowAdapters,
   flowAdapter,
   flowAdaptersForTag,
   flowAdapterSpecs,
@@ -520,12 +521,30 @@ Examples:
     const startedScenarios = new Set<string>();
     const results: FlowResult[] = [];
 
+    // A finally does not run on Ctrl-C: without this, an adapter's browser or
+    // session outlives the run, and the process never exits.
+    let current: ParsedFlow | null = null;
+    const onSignal = (signal: NodeJS.Signals) => {
+      console.error(`\n${signal}: tearing down flow adapters…`);
+      void this.disposeAdapters(current).finally(() =>
+        process.exit(signal === "SIGINT" ? 130 : 143));
+    };
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+
     try {
       for (const flow of selectedFlows) {
-        const flowResults = await this.runFlow(flow, modelFilter, startedScenarios, infra, autoPort, portFlag, baseUrlFlag);
-        results.push(...flowResults);
+        current = flow;
+        try {
+          const flowResults = await this.runFlow(flow, modelFilter, startedScenarios, infra, autoPort, portFlag, baseUrlFlag);
+          results.push(...flowResults);
+        } finally {
+          await this.disposeAdapters(flow);
+        }
       }
     } finally {
+      process.removeListener("SIGINT", onSignal);
+      process.removeListener("SIGTERM", onSignal);
       for (const [key, proc] of this.orchestratorProcesses) {
         try {
           await proc.stop();
@@ -1876,6 +1895,14 @@ Examples:
     if (step.adapter) return step.adapter;
     if (step.type === "script" || step.type === "message" || step.type === "assertions") return null;
     return flowAdaptersForTag(step.type)[0]?.name ?? null;
+  }
+
+  /** Teardown errors are warnings: the flow's own result already stands. */
+  private async disposeAdapters(flow: ParsedFlow | null): Promise<void> {
+    const env = this.expandEnvVars({ ...(process.env as Record<string, string>), ...(flow?.env ?? {}) });
+    const errors = await disposeFlowAdapters(() =>
+      this.makeAdapterCtx(flow, { type: "dispose" } as ParsedStep, env));
+    for (const err of errors) console.error(`\x1b[33mWarning: ${err.message}\x1b[0m`);
   }
 
   /** Build the context handed to a plugin adapter. */

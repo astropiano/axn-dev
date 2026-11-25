@@ -552,6 +552,10 @@ runs in-process with a typed context (`env`, `baseUrl`, `scenario`, `model`,
 `<keycloak .../>` step, for instance, dispatches to the adapter declaring the
 `keycloak` tag in its manifest.
 
+After each flow the engine calls every loaded adapter's optional `dispose`,
+also when a step failed, and starts the next flow with fresh instances. On
+Ctrl-C (SIGINT) or SIGTERM it runs the same teardown and exits 130 or 143.
+
 `axn-dev flow list-adapters` lists the registered adapters and their tags.
 `http` (generic POST of the `usermessage` to a scenario base URL) is bundled
 with `cmd-flow`; `keycloak` ships as `@axn-dev/adapter-keycloak`. Further
