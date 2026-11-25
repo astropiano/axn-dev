@@ -1,10 +1,17 @@
 import type { ScenarioLink } from "@axn-dev/core";
 import { escapeHtml, linksChevronHtml, portFromUrl } from "./html.js";
 import { menuChevronHtml, menuStyles, menuScripts } from "./menu.js";
+import {
+  themeBootScript,
+  themeFontLinks,
+  themeStyles,
+  type ServeThemeSet,
+} from "./theme.js";
 
 export function scenarioViewHtml(
   scenarioName: string,
   frontendServices: Record<string, string>,
+  theme: ServeThemeSet,
   links: ScenarioLink[] = [],
   frontend?: string | string[],
   switchableScenarios: { name: string; url: string }[] = [],
@@ -55,7 +62,9 @@ export function scenarioViewHtml(
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(scenarioName)} — axn-dev</title>
-  <link href="https://fonts.googleapis.com/css2?family=Raleway:wght@400;500;700;900&family=Lato:wght@400;700&display=swap" rel="stylesheet">
+  ${themeFontLinks(theme)}
+  ${themeBootScript(theme)}
+  ${themeStyles(theme)}
   ${scenarioViewStyles}
   ${menuStyles}
 </head>
@@ -85,37 +94,6 @@ export function scenarioViewHtml(
 }
 
 const scenarioViewStyles = `<style>
-  :root {
-    --primary-blue: #1E6F9A;
-    --primary-blue-hover: #3C99AF;
-    --neutral-obsidian: #0F0B0A;
-    --neutral-slate: #3A3A3A;
-    --neutral-cloud: #A2D7D7;
-    --neutral-mist: #EBEBEB;
-    --neutral-surface: #FFFFFF;
-    --accent-red: #F45B69;
-    --accent-green: #22C55E;
-    --font-heading: "Raleway", sans-serif;
-    --font-body: "Lato", sans-serif;
-    --bg: var(--neutral-mist);
-    --text: var(--neutral-obsidian);
-    --text-muted: var(--neutral-slate);
-    --surface: var(--neutral-surface);
-    --border: var(--neutral-cloud);
-    --accent: var(--primary-blue);
-    --accent-hover: var(--primary-blue-hover);
-    --accent-text: #FFFFFF;
-  }
-  [data-theme="dark"] {
-    --bg: var(--neutral-obsidian);
-    --text: var(--neutral-mist);
-    --text-muted: #B0B0B0;
-    --surface: #1A1A1A;
-    --border: #3A3A3A;
-    --accent: var(--accent-red);
-    --accent-hover: #F0A3AA;
-    --accent-text: var(--neutral-obsidian);
-  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; overflow: hidden; }
   body {
@@ -332,14 +310,6 @@ const scenarioViewStyles = `<style>
 </style>`;
 
 const scenarioViewScripts = `<script>
-  (function() {
-    const saved = localStorage.getItem('axn-dev-theme');
-    const theme = saved === 'auto' || !saved
-      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-      : saved;
-    document.documentElement.setAttribute('data-theme', theme);
-  })();
-
   function showLoading() {
     const el = document.getElementById('main-loading');
     if (el) el.style.display = 'flex';

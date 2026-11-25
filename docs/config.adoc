@@ -52,3 +52,69 @@ an existing directory also registers that directory
 as a workspace repo. See link:architecture.adoc[Architecture →
 Configuration].
 
+=== Serve dashboard themes (`serve:`)
+
+`axn-dev serve` themes its dashboard with pluggable theme files. The format
+is shared with axn-term (`id`, `name`, `mode`, `colors`, `ui`) plus a
+serve-specific `fonts:` section — an axn-term theme file drops in unchanged.
+Axn Dark and Axn Light ship bundled as examples and are the defaults.
+
+[source,yaml]
+----
+serve:
+  theme: auto             # light | dark | auto | <theme-id>
+  light-theme: axn-light  # theme used when the effective mode is light
+  dark-theme: axn-dark    # theme used when the effective mode is dark
+----
+
+`theme:` accepts a theme id as a shorthand for pinning the same theme to both
+modes. The light/dark/auto mode toggle still works per browser
+(`localStorage`); the config only sets which theme each mode resolves to and
+the default mode for new browsers.
+
+Theme files (`*.yaml`, `*.yml`, `*.json`) are discovered from two channels:
+
+1. `<pkg>/themes/` — bundled (`axn-dark`, `axn-light`)
+2. `~/.axn-dev/themes/` — your themes, no config needed
+
+User themes win on `id` collisions, so a user file can replace a bundled
+theme. The `serve:` section itself follows the usual config resolution —
+it can live in the global or the project-local `config.yaml`. Themes are
+rescanned on every page load — editing or adding a file applies on the
+next refresh, no server restart.
+
+[source,yaml]
+----
+# ~/.axn-dev/themes/my-theme.yaml
+id: my-theme
+name: My Theme
+mode: dark
+
+colors:                        # axn-term palette (all keys optional)
+  background: '#1B1B1F'
+  foreground: '#E4E4E8'
+  red: '#F45B69'
+  green: '#3DBB72'
+  blue: '#4F9FD0'
+  cyan: '#59C3C3'
+  orange: '#F97316'
+
+ui:                            # UI chrome overrides (all optional)
+  bg: '#1B1B1F'
+  surface: '#242429'
+  surfaceHover: '#2E2E35'
+  text: '#E4E4E8'
+  textSecondary: '#9A9AA2'
+  border: '#3A3A42'
+  accent: '#88C0D0'
+  accentHover: '#A2D7D7'
+
+fonts:                         # optional
+  heading: '"Raleway", sans-serif'
+  body: '"Lato", sans-serif'
+  import: 'https://fonts.googleapis.com/css2?family=Raleway:wght@400;700&display=swap'
+----
+
+Missing keys fall back to the axn palette of the same `mode`, so a sparse
+file still yields a complete theme.
+

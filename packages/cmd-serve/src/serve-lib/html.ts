@@ -13,6 +13,12 @@ import {
   tagTreeViewHtml,
   tagViewScripts,
 } from "./tagViews.js";
+import {
+  themeBootScript,
+  themeFontLinks,
+  themeStyles,
+  type ServeThemeSet,
+} from "./theme.js";
 
 /**
  * Extract the port from a link URL, so it can be auto-associated with the
@@ -69,6 +75,7 @@ export function pageShell(
   active: MenuSection,
   counts: MenuCounts,
   content: string,
+  theme: ServeThemeSet,
   extraScripts = "",
 ): string {
   const scenarioMeta = `${counts.scenarioRunning} running / ${counts.scenarioTotal} total`;
@@ -82,7 +89,9 @@ export function pageShell(
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(title)}</title>
-  <link href="https://fonts.googleapis.com/css2?family=Raleway:wght@400;500;700;900&family=Lato:wght@400;700&display=swap" rel="stylesheet">
+  ${themeFontLinks(theme)}
+  ${themeBootScript(theme)}
+  ${themeStyles(theme)}
   ${dashboardStyles}
   ${menuStyles}
 </head>
@@ -125,6 +134,7 @@ export function dashboardHtml(
   globalScenarios: ScenarioInfo[],
   runningDirs: Set<string>,
   counts: MenuCounts,
+  theme: ServeThemeSet,
   linksByScenario: Map<ScenarioInfo, ScenarioLink[]> = new Map(),
 ): string {
   const isRunning = (s: ScenarioInfo) => runningDirs.has(s.path.replace(/\/+$/, ""));
@@ -324,45 +334,10 @@ export function dashboardHtml(
   `;
 
   const tagScripts = tagViewScripts("scenario-table-view", "scenario-tree-view", "scenario-tag-search", "axn-dev-scenario-view");
-  return pageShell("axn-dev", "scenarios", counts, content, dashboardScripts + tagScripts);
+  return pageShell("axn-dev", "scenarios", counts, content, theme, dashboardScripts + tagScripts);
 }
 
 const dashboardStyles = `<style>
-  :root {
-    --primary-blue: #1E6F9A;
-    --primary-blue-hover: #3C99AF;
-    --neutral-obsidian: #0F0B0A;
-    --neutral-slate: #3A3A3A;
-    --neutral-cloud: #A2D7D7;
-    --neutral-mist: #EBEBEB;
-    --neutral-surface: #FFFFFF;
-    --accent-red: #F45B69;
-    --accent-green: #22C55E;
-    --font-heading: "Raleway", sans-serif;
-    --font-body: "Lato", sans-serif;
-    --bg: var(--neutral-mist);
-    --text: var(--neutral-obsidian);
-    --text-muted: var(--neutral-slate);
-    --surface: rgba(255, 255, 255, 0.8);
-    --surface-solid: var(--neutral-surface);
-    --border: var(--neutral-cloud);
-    --accent: var(--primary-blue);
-    --accent-hover: var(--primary-blue-hover);
-    --accent-text: #FFFFFF;
-  }
-
-  [data-theme="dark"] {
-    --bg: var(--neutral-obsidian);
-    --text: var(--neutral-mist);
-    --text-muted: #B0B0B0;
-    --surface: rgba(26, 26, 26, 0.8);
-    --surface-solid: #1A1A1A;
-    --border: #3A3A3A;
-    --accent: var(--accent-red);
-    --accent-hover: #F0A3AA;
-    --accent-text: var(--neutral-obsidian);
-  }
-
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html { height: 100%; }
 
@@ -467,7 +442,7 @@ const dashboardStyles = `<style>
   }
 
   .menu-item:hover {
-    background: var(--surface-solid);
+    background: var(--surface-hover);
     color: var(--text);
   }
 
@@ -664,7 +639,7 @@ const dashboardStyles = `<style>
   }
 
   .dropdown-item:hover {
-    background: rgba(30, 111, 154, 0.08);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
   }
 
   .dropdown-item--header {
@@ -737,7 +712,7 @@ const dashboardStyles = `<style>
   }
 
   .scenario-table tbody tr:hover {
-    background: rgba(30, 111, 154, 0.04);
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
   }
 
   .scenario-table tbody tr.running {
@@ -779,13 +754,13 @@ const dashboardStyles = `<style>
     font-weight: 700;
     text-transform: capitalize;
     letter-spacing: 0.02em;
-    background: rgba(162, 215, 215, 0.35);
+    background: color-mix(in srgb, var(--accent-cyan) 22%, transparent);
     color: var(--text);
   }
 
   .scope-badge.scope-global {
-    background: rgba(30, 111, 154, 0.15);
-    color: var(--primary-blue);
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent);
   }
 
   .status-pill {
@@ -801,7 +776,7 @@ const dashboardStyles = `<style>
   }
 
   .status-pill.running {
-    background: rgba(34, 197, 94, 0.12);
+    background: color-mix(in srgb, var(--accent-green) 14%, transparent);
     color: var(--accent-green);
   }
 
@@ -812,7 +787,7 @@ const dashboardStyles = `<style>
   }
 
   .status-pill.failed {
-    background: rgba(244, 91, 105, 0.12);
+    background: color-mix(in srgb, var(--accent-red) 14%, transparent);
     color: var(--accent-red);
   }
 
@@ -838,8 +813,8 @@ const dashboardStyles = `<style>
   }
 
   .flow-error {
-    background: rgba(244, 91, 105, 0.08);
-    border: 1px solid rgba(244, 91, 105, 0.25);
+    background: color-mix(in srgb, var(--accent-red) 9%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-red) 28%, transparent);
     border-radius: 8px;
     padding: 0.75rem 1rem;
     margin-bottom: 1rem;
@@ -939,8 +914,8 @@ const dashboardStyles = `<style>
     width: 22px;
     height: 22px;
     border-radius: 999px;
-    background: rgba(30, 111, 154, 0.12);
-    color: var(--primary-blue);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
     font-family: var(--font-heading);
     font-weight: 700;
     font-size: 0.72rem;
@@ -948,23 +923,23 @@ const dashboardStyles = `<style>
   }
 
   .step-kind-ts {
-    background: rgba(49, 120, 198, 0.15);
-    color: #4d9be6;
+    background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
+    color: var(--accent-blue);
   }
 
   .step-kind-msg {
-    background: rgba(34, 197, 94, 0.12);
+    background: color-mix(in srgb, var(--accent-green) 14%, transparent);
     color: var(--accent-green);
   }
 
   .step-kind-other {
-    background: rgba(30, 111, 154, 0.12);
-    color: var(--primary-blue);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
   }
 
   .step-kind-verify {
-    background: rgba(245, 166, 35, 0.15);
-    color: #d99413;
+    background: color-mix(in srgb, var(--accent-orange) 16%, transparent);
+    color: var(--accent-orange);
   }
 
   .step-asserts {
@@ -1197,11 +1172,7 @@ const dashboardStyles = `<style>
 
   .scenario-card.running {
     border-color: var(--accent);
-    box-shadow: 0 0 0 1px var(--accent), 0 4px 12px rgba(30, 111, 154, 0.08);
-  }
-
-  [data-theme="dark"] .scenario-card.running {
-    box-shadow: 0 0 0 1px var(--accent), 0 4px 12px rgba(244, 91, 105, 0.08);
+    box-shadow: 0 0 0 1px var(--accent), 0 4px 12px color-mix(in srgb, var(--accent) 10%, transparent);
   }
 
   .card-header {
@@ -1239,33 +1210,19 @@ const dashboardStyles = `<style>
   }
 
   .repo-badge {
-    background: rgba(162, 215, 215, 0.35);
+    background: color-mix(in srgb, var(--accent-cyan) 22%, transparent);
     color: var(--text);
   }
 
-  [data-theme="dark"] .repo-badge {
-    background: rgba(244, 91, 105, 0.15);
-  }
-
   .branch-badge {
-    background: rgba(30, 111, 154, 0.12);
-    color: var(--primary-blue);
-  }
-
-  [data-theme="dark"] .branch-badge {
-    background: rgba(30, 111, 154, 0.2);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
   }
 
   .worktree-badge {
-    background: rgba(30, 111, 154, 0.08);
-    color: #2e8b8b;
-    border: 1px solid rgba(30, 111, 154, 0.25);
-  }
-
-  [data-theme="dark"] .worktree-badge {
-    background: rgba(46, 139, 139, 0.12);
-    color: #5bc0be;
-    border-color: rgba(91, 192, 190, 0.3);
+    background: color-mix(in srgb, var(--accent-cyan) 12%, transparent);
+    color: var(--accent-cyan);
+    border: 1px solid color-mix(in srgb, var(--accent-cyan) 30%, transparent);
   }
 
   .card-actions {
@@ -1399,7 +1356,7 @@ const dashboardStyles = `<style>
 
   .btn-danger:hover:not(:disabled) {
     background: var(--accent-red);
-    color: #FFFFFF;
+    color: var(--accent-text);
   }
 
   .status-badge {
@@ -1414,7 +1371,7 @@ const dashboardStyles = `<style>
   }
 
   .status-badge.running {
-    background: rgba(34, 197, 94, 0.12);
+    background: color-mix(in srgb, var(--accent-green) 14%, transparent);
     color: var(--accent-green);
   }
 
@@ -1446,9 +1403,9 @@ const dashboardStyles = `<style>
   }
 
   .status-icon.alert {
-    background: rgba(244, 91, 105, 0.08);
+    background: color-mix(in srgb, var(--accent-red) 9%, transparent);
     color: var(--accent-red);
-    border: 1px solid rgba(244, 91, 105, 0.2);
+    border: 1px solid color-mix(in srgb, var(--accent-red) 22%, transparent);
   }
 
   .status-title {
@@ -1528,15 +1485,9 @@ const dashboardStyles = `<style>
   }
 
   .tag-badge {
-    background: rgba(245, 166, 35, 0.15);
-    color: #b47b12;
-    border: 1px solid rgba(245, 166, 35, 0.25);
-  }
-
-  [data-theme="dark"] .tag-badge {
-    background: rgba(245, 166, 35, 0.12);
-    color: #f5a623;
-    border-color: rgba(245, 166, 35, 0.3);
+    background: color-mix(in srgb, var(--accent-orange) 15%, transparent);
+    color: var(--accent-orange);
+    border: 1px solid color-mix(in srgb, var(--accent-orange) 28%, transparent);
   }
 
   .view-toggle {
@@ -1780,13 +1731,19 @@ const sharedScripts = `<script>
   }
 
   function currentThemePref() {
-    return localStorage.getItem('axn-dev-theme') || 'auto';
+    return localStorage.getItem('axn-dev-theme') || AXN_THEME.defaults.mode;
+  }
+
+  function themeIdForMode(mode) {
+    const stored = localStorage.getItem('axn-dev-' + mode + '-theme');
+    return AXN_THEME.modes[stored] ? stored : AXN_THEME.defaults[mode];
   }
 
   function applyTheme(pref) {
     const root = document.documentElement;
     const resolved = pref === 'auto' ? getSystemTheme() : pref;
     root.setAttribute('data-theme', resolved);
+    root.setAttribute('data-theme-name', themeIdForMode(resolved));
 
     const btn = document.getElementById('theme-cycle');
     if (btn) {
@@ -1808,9 +1765,9 @@ const sharedScripts = `<script>
 
   function initTheme() {
     applyTheme(currentThemePref());
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
       if (currentThemePref() === 'auto') {
-        document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+        applyTheme('auto');
       }
     });
   }

@@ -1,4 +1,5 @@
 import { escapeHtml, pageShell, type MenuCounts } from "./html.js";
+import type { ServeThemeSet } from "./theme.js";
 import type { FlowInfo } from "./flows.js";
 import type { ParsedFlow, ParsedStep } from "@axn-dev/flow-format";
 
@@ -92,6 +93,7 @@ export function manualFlowViewHtml(
   flow: FlowInfo,
   parsed: ParsedFlow,
   counts: MenuCounts,
+  theme: ServeThemeSet,
 ): string {
   const scenarioCheck = parsed.scenarios.length > 0
     ? `
@@ -234,5 +236,5 @@ export function manualFlowViewHtml(
     }
   </script>`;
 
-  return pageShell(`Manual: ${flow.name} — axn-dev`, "flows", counts, content, scripts);
+  return pageShell(`Manual: ${flow.name} — axn-dev`, "flows", counts, content, theme, scripts);
 }

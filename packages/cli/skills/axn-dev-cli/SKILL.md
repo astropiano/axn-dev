@@ -212,6 +212,7 @@ axn-dev git push --branch feature/my-work
 - `--workbase <branch>` applies the same worktree resolution as `start`/`stop`/`patch`
 - `axn-dev serve --stop` stops a running server; `Ctrl+C` or `POST /stop` also work
 - Config is re-read on every request, so changes to `~/.axn-dev/config.yaml` or scenario `axn-dev.yaml` files are picked up on refresh without restarting
+- The dashboard is themed with axn-term-format theme files (`axn-dark`/`axn-light` bundled): drop `*.yaml`/`*.json` into `~/.axn-dev/themes/`; select via `serve:` config (`theme`, `light-theme`, `dark-theme`) in the global or project-local config.yaml. Themes rescan per page load.
 
 ## Init / Install / Completion
 

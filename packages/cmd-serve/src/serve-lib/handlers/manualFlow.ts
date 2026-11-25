@@ -8,6 +8,7 @@ import { ManualFlowRunner, type ManualFlowInput } from "@axn-dev/flow-format";
 import type { ServeContext } from "../types.js";
 import { manualFlowViewHtml } from "../manualFlowViews.js";
 import { menuCountsAsync } from "./views.js";
+import { loadServeThemes } from "../theme.js";
 
 /** GET /flow/manual — render the manual execution form for a single flow. */
 export async function handleManualFlowView(ctx: ServeContext, url: URL, res: ServerResponse): Promise<void> {
@@ -33,7 +34,7 @@ export async function handleManualFlowView(ctx: ServeContext, url: URL, res: Ser
     return;
   }
 
-  const html = manualFlowViewHtml(flow, parsed, await menuCountsAsync(ctx));
+  const html = manualFlowViewHtml(flow, parsed, await menuCountsAsync(ctx), loadServeThemes(ctx.discovery.getConfig()));
   res.writeHead(200, { "Content-Type": "text/html" });
   res.end(html);
 }

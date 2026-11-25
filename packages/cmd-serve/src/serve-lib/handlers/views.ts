@@ -17,6 +17,7 @@ import { driverFor, getRunningDriverDirs, hasDriver } from "@axn-dev/core";
 import { devServerUrlEnv } from "@axn-dev/core";
 import type { ServeContext, ScenarioInstance } from "../types.js";
 import type { ScenarioLink } from "@axn-dev/core";
+import { loadServeThemes } from "../theme.js";
 
 function menuCountsFrom(
   globalScenarios: ScenarioInfo[],
@@ -137,7 +138,7 @@ export async function handleDashboard(ctx: ServeContext, res: ServerResponse): P
 
   const runningRuns = ctx.flowRuns.list().filter((r) => r.status === "running").length;
   const counts = menuCountsFrom(globalScenarios, projectScenarios, runningDirs, flows.length, runningRuns);
-  const html = dashboardHtml(projectScenarios, globalScenarios, runningDirs, counts, linksByScenario);
+  const html = dashboardHtml(projectScenarios, globalScenarios, runningDirs, counts, loadServeThemes(config), linksByScenario);
   res.writeHead(200, { "Content-Type": "text/html" });
   res.end(html);
 }
@@ -152,7 +153,7 @@ export async function handleFlows(ctx: ServeContext, res: ServerResponse): Promi
   const reports = listFlowReports(roots);
   const runs = ctx.flowRuns.list();
 
-  const html = flowsListHtml(flows, reports, runs, counts);
+  const html = flowsListHtml(flows, reports, runs, counts, loadServeThemes(config));
   res.writeHead(200, { "Content-Type": "text/html" });
   res.end(html);
 }
@@ -173,7 +174,7 @@ export async function handleFlowView(ctx: ServeContext, url: URL, res: ServerRes
   const reports = listFlowReports([flow.root]);
   const runs = ctx.flowRuns.list().filter((r) => r.file === file && r.flowName === name);
 
-  const html = flowViewHtml(flow, parsed, reports, runs, await menuCountsAsync(ctx));
+  const html = flowViewHtml(flow, parsed, reports, runs, await menuCountsAsync(ctx), loadServeThemes(config));
   res.writeHead(200, { "Content-Type": "text/html" });
   res.end(html);
 }
@@ -196,7 +197,7 @@ export async function handleFlowReportView(ctx: ServeContext, url: URL, res: Ser
     return;
   }
 
-  const html = flowReportHtml(file, report, flowName || undefined, await menuCountsAsync(ctx));
+  const html = flowReportHtml(file, report, flowName || undefined, await menuCountsAsync(ctx), loadServeThemes(config));
   res.writeHead(200, { "Content-Type": "text/html" });
   res.end(html);
 }
@@ -318,7 +319,7 @@ export async function handleScenarioView(ctx: ServeContext, url: URL, res: Serve
         .map((name) => ({ name, url: `/scenario/${encodeURIComponent(name)}` }))
     : [];
 
-  const html = scenarioViewHtml(scenarioName, frontendServices, links, frontend, switchable);
+  const html = scenarioViewHtml(scenarioName, frontendServices, loadServeThemes(config), links, frontend, switchable);
   res.writeHead(200, { "Content-Type": "text/html" });
   res.end(html);
 }

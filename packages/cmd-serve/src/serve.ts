@@ -32,6 +32,10 @@ Start the axn-dev proxy server. This is a persistent HTTP server that:
 
 The server runs until stopped with Ctrl+C, via this CLI's --stop flag, or via POST /stop.
 
+The dashboard is themeable: axn-term-format theme files are discovered from
+<axn-dev>/themes (bundled: axn-dark, axn-light) and ~/.axn-dev/themes/.
+Select via the serve: config section (theme, light-theme, dark-theme).
+
 Options:
   -h, --help           Show this help message
   --stop               Stop the running axn-dev serve server
@@ -88,6 +92,7 @@ API (localhost:7079):
     this.discovery = new ScenarioDiscoveryService(process.cwd(), workbase);
 
     const ctx: ServeContext = {
+      cwd: process.cwd(),
       registry: this.registry,
       flowRuns: new FlowRunManager(),
       scenarioRuns: new ScenarioRunManager(),

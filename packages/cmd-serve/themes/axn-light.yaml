@@ -1,0 +1,53 @@
+# Light companion to Axn Dark, ported from axn-term: the axn-term website's
+# paper (#EBEBEB chrome, #F5F5F4 surface) and obsidian ink. Coral darkened to
+# stay readable on paper; link blue as the accent.
+id: axn-light
+name: Axn Light
+mode: light
+
+colors:
+  background: '#F5F5F4'
+  foreground: '#1A1615'
+  cursor: '#B8323F'
+  cursorAccent: '#F5F5F4'
+  selectionBackground: '#D3E4EB'
+  selectionForeground: '#1A1615'
+
+  black: '#2A2726'
+  red: '#B8323F'
+  green: '#1E7A46'
+  yellow: '#8A5F00'
+  blue: '#175A7E'
+  magenta: '#8A47A6'
+  cyan: '#1C7475'
+  white: '#76706C'
+
+  brightBlack: '#6F6865'
+  brightRed: '#D04452'
+  brightGreen: '#26904F'
+  brightYellow: '#A87400'
+  brightBlue: '#2873A0'
+  brightMagenta: '#A05EBE'
+  brightCyan: '#278C8C'
+  brightWhite: '#A8A29E'
+
+  orange: '#B4500C'
+  violet: '#8A47A6'
+
+ui:
+  bg: '#EBEBEB'
+  bgSecondary: '#F5F5F4'
+  surface: '#F5F5F4'
+  surfaceHover: '#E0DFDD'
+  text: '#0F0B0A'
+  textSecondary: '#4F4C4A'
+  textInverted: '#F5F5F4'
+  border: '#C9C7C4'
+  accent: '#175A7E'
+  accentHover: '#1E6F9A'
+  cursor: '#B8323F'
+
+fonts:
+  heading: '"Raleway", sans-serif'
+  body: '"Lato", sans-serif'
+  import: 'https://fonts.googleapis.com/css2?family=Raleway:wght@400;500;700;900&family=Lato:wght@400;700&display=swap'

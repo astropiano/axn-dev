@@ -187,6 +187,8 @@ When in a project with an `.axn-dev` folder, the CLI checks project scenarios fi
 == Web dashboard (`axn-dev serve`)
 
 `axn-dev serve` starts a local web UI that lists both scenarios and flows.
+The dashboard is themeable — bundled Axn Dark/Light themes plus user themes
+dropped into `~/.axn-dev/themes/`; see link:config.adoc[Serve dashboard themes].
 
 Scenario tags are read from each scenario's `axn-dev.yaml` `tags:` list. Flow tags are read from the flow XML `<tags><tag>...</tag></tags>` element. Tags are shown as badges and can be filtered with the tag search box. Searching for a parent tag such as `myapp` also shows items tagged with `myapp/e2e`.
 

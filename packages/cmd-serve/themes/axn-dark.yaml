@@ -1,0 +1,53 @@
+# axn-term's own theme, ported to axn-dev serve. Warm near-black from the
+# axn-term website's dark palette. Coral (red) is the "needs you" colour; the
+# UI accent is the site's link blue.
+id: axn-dark
+name: Axn Dark
+mode: dark
+
+colors:
+  background: '#141110'
+  foreground: '#E9E5E2'
+  cursor: '#F0A3AA'
+  cursorAccent: '#141110'
+  selectionBackground: '#3A3330'
+  selectionForeground: '#E9E5E2'
+
+  black: '#2A2523'
+  red: '#F45B69'
+  green: '#3DBB72'
+  yellow: '#E3B341'
+  blue: '#4F9FD0'
+  magenta: '#C08FD8'
+  cyan: '#59C3C3'
+  white: '#CFC9C5'
+
+  brightBlack: '#877D79'
+  brightRed: '#F0A3AA'
+  brightGreen: '#6FD396'
+  brightYellow: '#F0C869'
+  brightBlue: '#82C6DC'
+  brightMagenta: '#D8B4F0'
+  brightCyan: '#A2D7D7'
+  brightWhite: '#F7F4F2'
+
+  orange: '#F97316'
+  violet: '#C08FD8'
+
+ui:
+  bg: '#141110'
+  bgSecondary: '#1C1918'
+  surface: '#1C1918'
+  surfaceHover: '#26211F'
+  text: '#E9E5E2'
+  textSecondary: '#AAA6A3'
+  textInverted: '#141110'
+  border: '#36312F'
+  accent: '#82C6DC'
+  accentHover: '#A2D7D7'
+  cursor: '#F0A3AA'
+
+fonts:
+  heading: '"Raleway", sans-serif'
+  body: '"Lato", sans-serif'
+  import: 'https://fonts.googleapis.com/css2?family=Raleway:wght@400;500;700;900&family=Lato:wght@400;700&display=swap'

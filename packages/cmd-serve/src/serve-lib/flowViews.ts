@@ -1,4 +1,5 @@
 import { escapeHtml, pageShell, type MenuCounts } from "./html.js";
+import type { ServeThemeSet } from "./theme.js";
 import type { FlowInfo, FlowReport, FlowReportFile, FlowRun } from "./flows.js";
 import type { EvidenceArtifact, ParsedFlow, ParsedStep } from "@axn-dev/flow-format";
 import {
@@ -51,6 +52,7 @@ export function flowsListHtml(
   reports: FlowReportFile[],
   runs: FlowRun[],
   counts: MenuCounts,
+  theme: ServeThemeSet,
 ): string {
   const renderRow = (f: FlowInfo): string => {
     const run = runs.find((r) => r.file === f.file && r.flowName === f.name);
@@ -315,7 +317,7 @@ export function flowsListHtml(
   </script>`;
 
   const tagScripts = tagViewScripts("flow-table-view", "flow-tree-view", "flow-tag-search", "axn-dev-flow-view");
-  return pageShell("Flows — axn-dev", "flows", counts, table, scripts + tagScripts);
+  return pageShell("Flows — axn-dev", "flows", counts, table, theme, scripts + tagScripts);
 }
 
 /** Describe one parsed step for the Flow tab. */
@@ -423,6 +425,7 @@ export function flowViewHtml(
   allReports: FlowReportFile[],
   runs: FlowRun[],
   counts: MenuCounts,
+  theme: ServeThemeSet,
 ): string {
   const reports = allReports.filter((r) => r.flowNames.includes(flow.name));
 
@@ -648,7 +651,7 @@ export function flowViewHtml(
     }, 3000);
   </script>`;
 
-  return pageShell(`${flow.name} — axn-dev flows`, "flows", counts, content, scripts);
+  return pageShell(`${flow.name} — axn-dev flows`, "flows", counts, content, theme, scripts);
 }
 
 /**
@@ -659,6 +662,7 @@ export function flowReportHtml(
   report: FlowReport,
   flowName: string | undefined,
   counts: MenuCounts,
+  theme: ServeThemeSet,
 ): string {
   const entries = flowName ? report.flows.filter((f) => f.flow === flowName) : report.flows;
 
@@ -856,5 +860,5 @@ export function flowReportHtml(
     }
   </script>`;
 
-  return pageShell(title, "flows", counts, content, scripts);
+  return pageShell(title, "flows", counts, content, theme, scripts);
 }
