@@ -49,10 +49,14 @@ registry.register(new CompletionCommand());
 
 // Plugin commands (lazy: manifest gives name/description, module loads on dispatch).
 // Scan roots: AXN_DEV_PLUGIN_DIRS + ~/.axn-dev/plugins/node_modules (in core),
-// plus the directory containing this package — that makes workspace siblings
-// and npm-installed sibling packages work with zero configuration.
+// plus the directory containing this package and its node_modules — workspace
+// siblings live in the parent dir, while a global `npm i -g` nests the cli's
+// own plugin deps under <cli>/node_modules.
 const cliPackageDir = join(dirname(fileURLToPath(import.meta.url)), "..");
-const plugins = discoverPlugins([join(cliPackageDir, "..")]);
+const plugins = discoverPlugins([
+  join(cliPackageDir, ".."),
+  join(cliPackageDir, "node_modules"),
+]);
 for (const pkg of plugins) {
   // Scenario types contributed by the plugin — markers register now so
   // scenario discovery resolves types without importing driver modules.
